@@ -14,6 +14,7 @@ import { boundedAgentResult } from "./agents-result.ts";
 import { outOfBounds } from "./agents-schema.ts";
 import { callResearchTool, RESEARCH_TOOL_NAMES } from "./agents-research-tools.ts";
 import { callHelperTool, HELPER_TOOL_NAMES } from "./agents-helper-tools.ts";
+import { callUsageLimitsTool, USAGE_LIMITS_TOOL } from "./agents-usage-tool.ts";
 import { callWaitTool, WAIT_TOOL_NAMES } from "./agents-wait-tools.ts";
 import { callComputerAskTool, COMPUTER_ASK_TOOL_NAMES } from "./agents-computer-ask-tool.ts";
 import { callMausBotTool, MAUSBOT_TOOL_NAMES } from "./agents-mausbot-tools.ts";
@@ -220,6 +221,7 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
   if (DEVS_TOOL_NAMES.has(name)) return callDevsTool(name, args, context);
   if (TRIGGER_TOOL_NAMES.has(name)) return callTriggerTool(name, args, context);
   if (WAIT_TOOL_NAMES.has(name)) return callWaitTool(name, args, context);
+  if (name === USAGE_LIMITS_TOOL) return callUsageLimitsTool(context);
   if (COMPUTER_ASK_TOOL_NAMES.has(name)) return callComputerAskTool(args, context);
   // Second lock: with sharing off the catalog already omits these tools.
   if (SHARED_COMPUTER_TOOL_NAMES.has(name) && !context.sharedComputers) {
@@ -403,6 +405,13 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
     const body: Record<string, unknown> = { fromBotId: BOT_ID, fromThreadId: THREAD_ID, title, message, depth: DEPTH };
     if (toBotId) body.toBotId = toBotId;
     if (folder) body.folder = folder;
+    if (args.model_selection !== undefined) {
+      const fields = jsonRecord(args.model_selection) ? args.model_selection : null;
+      if (!fields || typeof fields.instanceId !== "string" || !fields.instanceId.trim() || typeof fields.model !== "string" || !fields.model.trim()) {
+        return { text: "start_thread model_selection needs instanceId and model.", isError: true };
+      }
+      body.modelSelection = { instanceId: fields.instanceId.trim(), model: fields.model.trim() };
+    }
     const r = await api("/api/internal/threads", { method: "POST", body: JSON.stringify(body) });
     if (r.error && r.state !== "failed") return { text: `Couldn't open that thread: ${String(r.error)}`, isError: true };
     const receipt = r.self !== true && Array.isArray(r.receipts) && jsonRecord(r.receipts[0]) ? r.receipts[0] : undefined;
