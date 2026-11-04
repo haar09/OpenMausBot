@@ -102,6 +102,9 @@ registerHooks({
       }
     ` };
     const result = nextLoad(url, context);
+    if (url.endsWith('/index.ts')) {
+      return { ...result, source: String(result.source).replace('const LOCAL_VM_DESKTOP_WAIT_MS = 90_000;', 'const LOCAL_VM_DESKTOP_WAIT_MS = 100;') };
+    }
     if (url.endsWith('/computer-idle.ts')) {
       return { ...result, source: `import { readFileSync as readVmIdle } from 'node:fs';\n` +
         String(result.source).replaceAll('checkedIdleMs(idleMs)', `(JSON.parse(readVmIdle(${JSON.stringify(state)}, 'utf8')).idleMs ?? checkedIdleMs(idleMs))`) };

@@ -11793,6 +11793,12 @@ async function localVmPayload(target: LocalVmTarget, auth: RequestAuth) {
   };
 }
 
+function localVmDesktopStartupPending(status: ContainerComputerStatus): boolean {
+  return Boolean(status.runtime && status.daemonUp && status.image && status.imageMatches &&
+    status.managed && status.container === "running" && status.network === "loopback" &&
+    status.security === "hardened" && status.persistence === "durable");
+}
+
 async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurrent = () => true) {
   localVmLifecycleBusy.add(target.key);
   // Fence before the first await, so two concurrent turns cannot both pass the per-bot limit between count and create.
@@ -11806,7 +11812,9 @@ async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurre
     noteLocalVmSeen(target, status);
     if (!isCurrent()) return status;
     const action = localVmWakeAction(status);
-    if (status.ready || !action || !status.runtime) return status;
+    if (status.ready || !status.runtime) return status;
+    if (!action && !localVmDesktopStartupPending(status)) return status;
+    if (action) {
     if (action === "run" && !pooled && !ownsProvision) return status;
 
     if (action === "run" && target.key.startsWith("bot:")) {
@@ -11822,6 +11830,7 @@ async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurre
       localVmIdleFor(target).touch();
       return status;
     }
+    }
   } finally {
     if (ownsProvision) localVmProvisionBusy = false;
     localVmLifecycleBusy.delete(target.key);
@@ -11830,7 +11839,7 @@ async function readyLocalVmForTurn(botId: string, target: LocalVmTarget, isCurre
 
   // The container is up before Cua Driver is: wait rather than fail the turn.
   const deadline = Date.now() + LOCAL_VM_DESKTOP_WAIT_MS;
-  while (isCurrent() && !status.ready && status.container === "running" && Date.now() < deadline) {
+  while (isCurrent() && !status.ready && localVmDesktopStartupPending(status) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2_000));
     if (!isCurrent()) break;
     status = await containerComputerStatus(undefined, undefined, target);

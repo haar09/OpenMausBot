@@ -85,6 +85,8 @@ const FILE_MIMES: Readonly<Record<string, string>> = {
   "audio/x-flac": ".flac",
   "audio/webm": ".webm",
   "text/plain": ".txt",
+  "text/x-patch": ".patch",
+  "text/x-diff": ".diff",
   "text/markdown": ".md",
   "text/csv": ".csv",
   "text/tab-separated-values": ".tsv",

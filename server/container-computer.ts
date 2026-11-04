@@ -1,3 +1,6 @@
+import { prepareGitWorkspace } from "./dmxo/git-workspace.mjs";
+import { prepareAwsWorkspace } from "./dmxo/aws-workspace.mjs";
+import { awsCliStage, awsDesktopLayer, desktopGitLayer, desktopDevelopmentLayer } from "./dmxo/desktop-layers.ts";
 // Cua-backed Local VM: OMB owns only the sandbox boundary; desktop automation is Cua Driver's (`cua-driver mcp` in the container).
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -116,6 +119,10 @@ const LINUX_WHEELS = {
 /** Both Linux wheels are exact-version and SHA-256 verified. The first RUN rejects a defective base: some published ARM64
  * upstream layers shipped zero-byte OpenSSL libraries ("curl: error while loading shared libraries … file too short"). */
 export function managedImageDockerfile(): string {
+  return awsCliStage + baseManagedImageDockerfile() + desktopGitLayer + awsDesktopLayer + "\n" + desktopDevelopmentLayer;
+}
+
+function baseManagedImageDockerfile(): string {
   return `FROM ${BASE_IMAGE}
 USER root
 RUN set -eux; \\
@@ -912,6 +919,8 @@ export function containerRunArgs(
 async function ensureVmWorkspace(platform: NodeJS.Platform, target: LocalVmTarget): Promise<void> {
   await mkdir(target.workspaceDir, { recursive: true, mode: 0o700 });
   if (platform !== "win32") await chmod(target.workspaceDir, 0o700);
+  await prepareGitWorkspace(target.workspaceDir);
+  await prepareAwsWorkspace(target.workspaceDir);
 }
 
 function baseImagePullArgs(runtime: Runtime): string[] {
