@@ -10,7 +10,9 @@ patch/diff attachments, a guarded desktop startup wait, Git/AWS workspace identi
 provisioning and development tools in each native Cua desktop. Dedicated AWS
 identities are matched to their exact workspace before credentials are copied;
 other desktops keep their shared configured role. The code grants no AWS or DB
-permissions by itself.
+permissions by itself. Codex bot subprocesses disable the native GitHub plugin so
+GitHub API calls use the workspace Connected Apps/Composio identity. This does not
+uninstall the personal plugin or disable other Codex apps.
 
 ## Build
 

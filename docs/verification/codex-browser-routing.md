@@ -1,6 +1,8 @@
 # Codex browser routing
 
-Codex bot processes use OpenMausBot's selected browser/desktop bridge. Process-local overrides disable the bundled desktop-only browser/computer plugins; they do not uninstall plugins, change the user's Codex configuration, or disable native web search.
+Codex bot processes use OpenMausBot's selected browser/desktop bridge. Process-local overrides disable the bundled desktop-only browser/computer plugins and the native `github@openai-curated-remote` plugin; they do not uninstall plugins, change the user's Codex configuration, or disable native web search.
+
+GitHub API work uses the workspace's Connected Apps/Composio MCP connection. Git over SSH and other Codex plugins retain their existing configuration. The native GitHub plugin remains installed in the standalone Codex account; only OpenMausBot-launched processes receive the override. On codex-cli 0.166.0, `config/read` reports that plugin with `enabled:false` for the overridden process.
 
 ## Regression checks
 

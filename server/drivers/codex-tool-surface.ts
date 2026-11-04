@@ -7,7 +7,7 @@ export function codexToolSurfaceArgs(): string[] {
     "-c", "features.browser_use_external=false",
     "-c", "features.computer_use=false",
     // An inline table: some CLIs read quoted dotted keys literally.
-    "-c", 'plugins={ "browser@openai-bundled" = { enabled = false }, "computer-use@openai-bundled" = { enabled = false }, "unified-computer-use@openai-bundled" = { enabled = false } }',
+    "-c", 'plugins={ "browser@openai-bundled" = { enabled = false }, "computer-use@openai-bundled" = { enabled = false }, "unified-computer-use@openai-bundled" = { enabled = false }, "github@openai-curated-remote" = { enabled = false } }',
     // Native web search needs no desktop browser connection; keep the user's/provider's mode.
   ];
 }

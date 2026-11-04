@@ -419,6 +419,12 @@ must block those can allow only company models, or leave personal Codex off
 its engine list. Company Codex uses its own separate home, without your
 `config.toml`.
 
+The dmxo deployment additionally disables the native
+`github@openai-curated-remote` plugin in OpenMausBot-launched Codex processes.
+GitHub API work uses Connected Apps/Composio. This process-local override does
+not uninstall the personal plugin, disconnect the account, or filter other
+inherited MCP servers and plugins.
+
 ## Advanced: edit the file
 
 The same registry lives in `~/.openmausbot/config.json`:
