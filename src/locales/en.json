@@ -7369,5 +7369,11 @@
   "botAccess.overview.botCount.other": "{count} bots",
   "botAccess.overview.noBotsForPerson": "{name} has no bots yet.",
   "botAccess.overview.allPeople": "All people",
-  "botAccess.overview.toastRemoved": "{bot}: removed {name}"
+  "botAccess.overview.toastRemoved": "{bot}: removed {name}",
+  "sidebar.update.versions": "Installed {current} · Latest {latest}",
+  "sidebar.update.behindOne": "1 stable release behind",
+  "sidebar.update.behindMany": "{count} stable releases behind",
+  "sidebar.update.behindAtLeast": "At least {count} stable releases behind",
+  "sidebar.update.gapUnknown": "Release gap could not be determined",
+  "sidebar.update.lastKnown": "Installed {current} · Last known latest {latest}"
 }

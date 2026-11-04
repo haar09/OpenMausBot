@@ -103,3 +103,21 @@ describe("the update row for another server the app shows", () => {
     }
   });
 });
+
+describe("persistent version status", () => {
+  it("shows installed, latest, and the actual stable release gap", () => {
+    const result = check({ current: "0.1.138", latest: "0.1.140", available: true, checkedAt: "2026-11-04T00:00:00Z", behind: 2, behindExact: true });
+    expect(serverUpdateRow("available", result)).toEqual({ label: "Installed 0.1.138 · Latest 0.1.140", subtitle: "2 stable releases behind" });
+    setLocale("tr");try { expect(serverUpdateRow("available", result)).toEqual({ label: "Kurulu 0.1.138 · En güncel 0.1.140", subtitle: "2 kararlı sürüm geride" }); } finally { setLocale("en"); }
+  });
+  it("does not hide an unknown or lower-bound distance", () => {
+    const result = check({ latest: "0.1.140", available: true, checkedAt: "2026-11-04T00:00:00Z" });
+    expect(serverUpdateRow("available", result).subtitle).toBe("Release gap could not be determined");
+    expect(serverUpdateRow("available", { ...result, behind: 3, behindExact: false }).subtitle).toBe("At least 3 stable releases behind");
+  });
+  it("shows cached versions as last known after a network failure", () => {
+    const result = check({ current: "0.1.138", latest: "0.1.140", stale: true });
+    expect(serverCheckPhase(result)).toBe("error");
+    expect(serverUpdateRow("error", result).subtitle).toBe("Installed 0.1.138 · Last known latest 0.1.140");
+  });
+});

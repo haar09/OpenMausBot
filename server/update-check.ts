@@ -3,7 +3,9 @@ import { existsSync } from "node:fs";
 import { join, sep } from "node:path";
 
 export const LATEST_RELEASE_URL = "https://api.github.com/repos/milind-soni/OpenMausBot/releases/latest";
+export const RELEASE_HISTORY_URL = "https://api.github.com/repos/milind-soni/OpenMausBot/releases";
 const CACHE_MS = 60 * 60_000;
+const STABLE_TAG = /^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/;
 
 /** "managed" is a hosted or Cloud server that is updated for its owner. */
 export type InstallKind = "desktop" | "managed" | "docker" | "podman" | "npm" | "git" | "unknown";
@@ -67,9 +69,14 @@ export interface UpdateCheck {
   releaseUrl?: string;
   command?: string;
   restart?: boolean;
+  behind?: number;
+  behindExact?: boolean;
+  checkedAt?: string;
+  stale?: boolean;
+  historyUnavailable?: boolean;
 }
 
-/** One cached GitHub lookup an hour, shared by every caller. */
+/** A cached stable-release check shared by all callers; bounded history counts published releases, not version-number differences. */
 export function createUpdateChecker(options: {
   current: string;
   install: InstallKind;
@@ -78,7 +85,8 @@ export function createUpdateChecker(options: {
 }) {
   const fetchRelease = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
-  let cached: { at: number; result: UpdateCheck } | undefined;
+  let cached: { until: number; result: UpdateCheck } | undefined;
+  let failed: { until: number; error: Error } | undefined;
   let inflight: Promise<UpdateCheck> | undefined;
   const base = (): UpdateCheck => ({
     current: options.current,
@@ -89,25 +97,66 @@ export function createUpdateChecker(options: {
 
   return async function check(): Promise<UpdateCheck> {
     if (options.install === "desktop" || options.install === "managed") return base();
-    if (cached && now() - cached.at < CACHE_MS) return cached.result;
+    if (cached && now() < cached.until) return cached.result;
+    if (failed && now() < failed.until) {
+      if (cached) return { ...cached.result, stale: true };
+      throw failed.error;
+    }
     inflight ??= (async () => {
       try {
-        const response = await fetchRelease(LATEST_RELEASE_URL, {
+        const request = {
           headers: { accept: "application/vnd.github+json", "user-agent": "openmausbot-update-check" },
           signal: AbortSignal.timeout(8_000),
-        });
+        };
+        const response = await fetchRelease(LATEST_RELEASE_URL, request);
         if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
-        const release = await response.json() as { tag_name?: unknown; html_url?: unknown };
-        if (typeof release.tag_name !== "string") throw new Error("GitHub sent no release tag");
+        const release = await response.json() as { tag_name?: unknown; draft?: boolean; prerelease?: boolean };
+        if (typeof release.tag_name !== "string" || !STABLE_TAG.test(release.tag_name) || release.draft || release.prerelease) throw new Error("GitHub sent no stable release tag");
+        if (!/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(options.current)) throw new Error("Installed version cannot be compared");
         const latest = release.tag_name.replace(/^v/, "");
         const result: UpdateCheck = {
           ...base(),
           latest,
           available: isNewerVersion(latest, options.current),
-          ...(typeof release.html_url === "string" ? { releaseUrl: release.html_url } : {}),
+          releaseUrl: `https://github.com/milind-soni/OpenMausBot/releases/tag/${encodeURIComponent(release.tag_name)}`,
+          checkedAt: new Date(now()).toISOString(),
         };
-        cached = { at: now(), result };
+        if (!result.available) {
+          result.behind = 0;
+          result.behindExact = true;
+        } else {
+          const versions = new Set<string>();
+          try {
+            for (let page = 1; page <= 5; page++) {
+              const history = await fetchRelease(`${RELEASE_HISTORY_URL}?per_page=100&page=${page}`, request);
+              if (!history.ok) throw new Error(`GitHub history answered ${history.status}`);
+              const rows: unknown = await history.json();
+              if (!Array.isArray(rows)) throw new Error("GitHub sent no release history");
+              for (const row of rows) {
+                if (!row || typeof row !== "object" || typeof row.tag_name !== "string" || row.draft || row.prerelease || !STABLE_TAG.test(row.tag_name)) continue;
+                const version = row.tag_name.replace(/^v/, "").split("+")[0]!;
+                if (isNewerVersion(version, options.current) && !isNewerVersion(version, latest)) versions.add(version);
+              }
+              if (rows.length < 100) {
+                result.behindExact = true;
+                break;
+              }
+            }
+            versions.add(latest.split("+")[0]!);
+            result.behind = versions.size;
+            result.behindExact ??= false;
+          } catch {
+            result.historyUnavailable = true;
+          }
+        }
+        failed = undefined;
+        cached = { until: now() + (result.historyUnavailable ? 5 * 60_000 : CACHE_MS), result };
         return result;
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        failed = { until: now() + 60_000, error };
+        if (cached) return { ...cached.result, stale: true };
+        throw error;
       } finally {
         inflight = undefined;
       }

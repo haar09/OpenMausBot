@@ -10,6 +10,11 @@ export interface ServerUpdateCheck {
   releaseUrl?: string;
   command?: string;
   restart?: boolean;
+  behind?: number;
+  behindExact?: boolean;
+  checkedAt?: string;
+  stale?: boolean;
+  historyUnavailable?: boolean;
 }
 
 export type ServerUpdatePhase = "idle" | "checking" | "up-to-date" | "available" | "reload" | "error";
@@ -19,6 +24,7 @@ export type ServerUpdatePhase = "idle" | "checking" | "up-to-date" | "available"
  * the old bundle (the version About shows), so a current server alone doesn't make the page up to date.
  */
 export function serverCheckPhase(check: ServerUpdateCheck, bundle = appVersion()): ServerUpdatePhase {
+  if (check.stale) return "error";
   if (check.available) return "available";
   if (check.install === "desktop" || check.install === "managed") return "up-to-date";
   return bundle !== "dev" && check.current !== bundle ? "reload" : "up-to-date";
@@ -33,9 +39,17 @@ export function serverUpdateRow(
   otherServer: string | null = null,
 ): { label: string; subtitle?: string } {
   if (phase === "checking") return { label: t("sidebar.update.checking") };
-  if (phase === "error") return { label: t("sidebar.update.checkFailed") };
+  if (phase === "error") return { label: t("sidebar.update.checkFailed"), ...(check?.latest ? { subtitle: t("sidebar.update.lastKnown", { current: check.current, latest: check.latest }) } : {}) };
   if (check?.install === "desktop") return { label: t("sidebar.update.howDesktop") };
   if (check?.install === "managed") return { label: t("sidebar.update.managed") };
+  if (check?.checkedAt && check.latest && phase !== "reload") {
+    const label = t("sidebar.update.versions", { current: check.current, latest: check.latest });
+    const gap = check.behind === undefined ? t("sidebar.update.gapUnknown")
+      : check.behind === 0 ? t("sidebar.update.upToDate")
+        : check.behindExact === false ? t("sidebar.update.behindAtLeast", { count: check.behind })
+          : check.behind === 1 ? t("sidebar.update.behindOne") : t("sidebar.update.behindMany", { count: check.behind });
+    return { label, subtitle: gap };
+  }
   if (phase === "available" && check?.latest) {
     const how = otherServer
       ? (check.restart ? "sidebar.update.howOtherRestart" : "sidebar.update.howOther")

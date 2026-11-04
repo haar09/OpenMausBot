@@ -5222,5 +5222,14 @@
   "botAccess.overview.botCount.other": "{count} bot",
   "botAccess.overview.noBotsForPerson": "{name} için henüz bot yok.",
   "botAccess.overview.allPeople": "Tüm kişiler",
-  "botAccess.overview.toastRemoved": "{bot}: {name} kaldırıldı"
+  "botAccess.overview.toastRemoved": "{bot}: {name} kaldırıldı",
+  "sidebar.update.versions": "Kurulu {current} · En güncel {latest}",
+  "sidebar.update.behindOne": "1 kararlı sürüm geride",
+  "sidebar.update.behindMany": "{count} kararlı sürüm geride",
+  "sidebar.update.behindAtLeast": "En az {count} kararlı sürüm geride",
+  "sidebar.update.gapUnknown": "Kaç sürüm geride olduğu belirlenemedi",
+  "sidebar.update.lastKnown": "Kurulu {current} · Son bilinen güncel sürüm {latest}",
+  "settings.simple.updates.seeRelease": "Sürüm notları",
+  "settings.simple.page.updates": "Güncellemeler",
+  "settings.simple.updates.reload": "Sayfayı yenile"
 }

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { AppSettingsSection } from "@/state/store";
 import { t } from "@/lib/i18n";
-import { appVersion } from "@/lib/app-links";
+import { appVersion, openExternalLink } from "@/lib/app-links";
 import type { LocaleKey } from "@/locales";
 import { productName } from "../lib/brand";
 import { AnalyticsRow } from "./AnalyticsRow";
@@ -184,12 +184,14 @@ function ServerUpdatesRow() {
   const entry = useServerUpdateItem(true);
   if (!entry) return null;
   const status = entry.phase === "idle" ? undefined : [entry.label, entry.item.subtitle].filter(Boolean).join(" ");
-  const action = entry.phase === "available" ? t("settings.simple.updates.seeRelease")
-    : entry.phase === "reload" ? t("settings.simple.updates.reload")
+  const action = entry.phase === "reload" ? t("settings.simple.updates.reload")
       : entry.phase === "checking" ? t("common.checking") : t("settings.updates.check");
   return (
     <SettingRow title={versionTitle()} subtitle={status}>
-      <button type="button" className="ui-button" disabled={entry.item.disabled} onClick={entry.item.onSelect}>{action}</button>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="ui-button" disabled={entry.item.disabled} onClick={entry.phase === "reload" ? entry.item.onSelect : entry.refresh}>{action}</button>
+        {entry.check?.releaseUrl && <button type="button" className="ui-button" onClick={() => void openExternalLink(entry.check!.releaseUrl!)}>{t("settings.simple.updates.seeRelease")}</button>}
+      </div>
     </SettingRow>
   );
 }

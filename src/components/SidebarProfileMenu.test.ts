@@ -460,6 +460,7 @@ describe("Simple mode's account menu", () => {
     expect(simpleUpdateTop({ source: "desktop", phase: "downloaded", installMode: "handoff" })).toEqual({ label: "Update ready", action: "Install" });
     expect(simpleUpdateTop({ source: "desktop", phase: "error" })).toEqual({ label: "Update failed", action: "Retry" });
     expect(simpleUpdateTop({ source: "server", phase: "available" })).toEqual({ label: "Update ready", action: "Install" });
+    expect(simpleUpdateTop({ source: "server", phase: "available", check: { current: "0.1.138", latest: "0.1.140", install: "docker", available: true, checkedAt: "2026-11-04T00:00:00Z" } })).toEqual({ label: "0.1.138 → 0.1.140", action: "See the release", showVersionDetails: true });
     expect(simpleUpdateTop({ source: "server", phase: "reload" })).toEqual({ label: "Update ready", action: "Restart" });
     for (const phase of ["idle", "checking", "downloading", "up-to-date"] as const) expect(simpleUpdateTop({ source: "desktop", phase })).toBeNull();
     expect(simpleUpdateTop({ source: "server", phase: "error" })).toBeNull();

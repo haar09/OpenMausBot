@@ -155,16 +155,19 @@ interface UpdateEntry {
   label: string;
   source?: "desktop" | "server";
   installMode?: string;
+  check?: ServerUpdateCheck | null;
+  refresh?: () => void;
 }
 
 /** The update a Simple account menu raises to its top row: one waiting to be installed, or one that failed. */
-export function simpleUpdateTop(entry: Pick<UpdateEntry, "phase" | "source" | "installMode"> | null): { label: string; action: string } | null {
+export function simpleUpdateTop(entry: (Pick<UpdateEntry, "phase" | "source" | "installMode"> & Partial<Pick<UpdateEntry, "check" | "label">>) | null): { label: string; action: string; showVersionDetails?: true } | null {
   const ready = () => t("sidebar.update.readyShort");
   if (entry?.source === "desktop") {
     if (entry.phase === "downloaded") return { label: ready(), action: t(entry.installMode === "handoff" ? "sidebar.update.installAction" : "sidebar.update.restartAction") };
     if (entry.phase === "error") return { label: t("sidebar.update.failedShort"), action: t("sidebar.update.retryAction") };
   }
   if (entry?.source === "server") {
+    if (entry.phase === "available" && entry.check?.checkedAt && entry.check.latest) return { label: `${entry.check.current} → ${entry.check.latest}`, action: t("settings.simple.updates.seeRelease"), showVersionDetails: true };
     if (entry.phase === "available") return { label: ready(), action: t("sidebar.update.installAction") };
     if (entry.phase === "reload") return { label: ready(), action: t("sidebar.update.restartAction") };
   }
@@ -224,18 +227,35 @@ export function useServerUpdateItem(enabled: boolean): UpdateEntry | null {
   const otherServer = useOtherServerName(enabled);
 
   useEffect(() => {
-    if (phase !== "up-to-date") return;
-    const timer = setTimeout(() => setPhase("idle"), 3000);
-    return () => clearTimeout(timer);
-  }, [phase]);
+    if (!enabled) return;
+    let active = true;
+    const controller = new AbortController();
+    const refresh = () => {
+      setPhase("checking");
+      void api<ServerUpdateCheck>("/api/updates/check", { timeoutMs: 20_000, signal: controller.signal })
+        .then((next) => { if (active) { setCheck(next); setPhase(serverCheckPhase(next)); } })
+        .catch(() => { if (active) setPhase("error"); });
+    };
+    refresh();
+    const timer = setInterval(refresh, 60 * 60_000);
+    return () => { active = false; controller.abort(); clearInterval(timer); };
+  }, [enabled]);
 
   if (!enabled) return null;
   const row = serverUpdateRow(phase, check, appVersion(), otherServer);
+  const refresh = () => {
+    setPhase("checking");
+    void api<ServerUpdateCheck>("/api/updates/check", { timeoutMs: 20_000 })
+      .then((next) => { setCheck(next); setPhase(serverCheckPhase(next)); })
+      .catch(() => setPhase("error"));
+  };
   return {
     phase,
     pending: false,
     label: row.label,
     source: "server",
+    check,
+    refresh,
     item: {
       key: "update",
       label: row.label,
@@ -248,13 +268,7 @@ export function useServerUpdateItem(enabled: boolean): UpdateEntry | null {
       onSelect: () => {
         if (phase === "available" && check?.releaseUrl) return void openExternalLink(check.releaseUrl);
         if (phase === "reload") return window.location.reload();
-        setPhase("checking");
-        void api<ServerUpdateCheck>("/api/updates/check", { timeoutMs: 20_000 })
-          .then((next) => {
-            setCheck(next);
-            setPhase(serverCheckPhase(next));
-          })
-          .catch(() => setPhase("error"));
+        refresh();
       },
     },
   };
@@ -468,7 +482,7 @@ export function profileMenuItems({
   usage: boolean;
   usageSummary?: UsageSummary | null;
   update: SidebarMenuItem | null;
-  updateTop?: { label: string; action: string } | null;
+  updateTop?: { label: string; action: string; showVersionDetails?: true } | null;
   /** the move to My Cloud's own rows, first of all (AccountMove) */
   move?: SidebarMenuItem[];
   account: string | null;
@@ -513,7 +527,7 @@ export function profileMenuItems({
   const raised: SidebarMenuItem | null = update && updateTop ? {
     ...update,
     label: updateTop.label,
-    subtitle: undefined,
+    subtitle: updateTop.showVersionDetails ? update.subtitle : undefined,
     attention: false,
     trailing: <span className="flex h-6 shrink-0 items-center rounded-full bg-ink px-2.5 text-[12px] font-medium text-app">{updateTop.action}</span>,
   } : null;
