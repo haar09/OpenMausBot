@@ -31,18 +31,27 @@ export function isOpenAIAddress(apiUrl: string): boolean {
   return own && url.protocol === "https:" && url.pathname.replace(/\/+$/, "") === "/v1";
 }
 
+export function isAzureOpenAIAddress(apiUrl: string): boolean {
+  let url: URL;
+  try { url = new URL(apiUrl); } catch { return false; }
+  return url.protocol === "https:" && url.pathname.replace(/\/+$/, "") === "/openai/v1" &&
+    (url.hostname.endsWith(".openai.azure.com") || url.hostname.endsWith(".services.ai.azure.com"));
+}
+
 /** Each model only moves forward (chat, responses, chat-reasoning-off), so a resend can never loop. A call without tools
  * never meets the refusal and stays on Chat Completions. */
 export function createModelRoutes(apiUrl: string) {
-  const servesResponses = isOpenAIAddress(apiUrl);
+  const azure = isAzureOpenAIAddress(apiUrl);
+  const servesResponses = isOpenAIAddress(apiUrl) || azure;
   const routes = new Map<string, ModelRoute>();
   const noSummaries = new Set<string>();
+  const routeFor = (model: string): ModelRoute => routes.get(model) ?? (azure && /^gpt-6(?:[.-]|$)/i.test(model) ? "responses" : "chat");
   return {
-    routeFor: (model: string, hasTools: boolean): ModelRoute => hasTools ? routes.get(model) ?? "chat" : "chat",
+    routeFor: (model: string, hasTools: boolean): ModelRoute => hasTools ? routeFor(model) : "chat",
     summaries: (model: string) => !noSummaries.has(model),
     /** False when the model has nothing left to try. */
     advance(model: string, refusal: RouteRefusal): boolean {
-      const route = routes.get(model) ?? "chat";
+      const route = routeFor(model);
       if (refusal === "summaries-refused") {
         if (noSummaries.has(model)) return false;
         noSummaries.add(model);
@@ -121,6 +130,7 @@ export function responsesRequest(input: {
     model: input.model,
     stream: true,
     store: false,
+    include: ["reasoning.encrypted_content"],
     ...(instructions ? { instructions } : {}),
     input: input.messages.flatMap((message) => inputItems(message, input.replay(message))),
     ...(input.summaries ? { reasoning: { summary: "auto" } } : {}),

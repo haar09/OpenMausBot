@@ -190,7 +190,7 @@ function replayDelivered(
   return { content, matched: found.map(({ record }) => record), volatile };
 }
 
-const CORRECTIVE_ROUND = "[OpenMausBot: a tool call in this turn failed (its result is marked ok:false). Re-run the failed operations with corrected inputs where possible, check the results, then give your final answer. Do not report results you did not get. Use an available alternative if appropriate, and verify the same requested result. Never repeat a successful or possibly applied write; inspect its state first.]";
+const CORRECTIVE_ROUND = "[OpenMausBot: a tool call in this turn failed (its result is marked ok:false). Re-run the failed operations with corrected inputs where possible, check the results, then give your final answer. Do not report results you did not get.]";
 const NUDGE_ANNOUNCED_ACTION = "You said what you would do next but called no tool. Use your tools for only the remaining work, or reply with verified results if nothing is left to do. Never repeat an operation that succeeded, was denied, or may already have taken effect; inspect its state instead. Do not retry a destructive operation.";
 
 export function announcesAction(text: string): boolean {
@@ -299,7 +299,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           ...(route === "chat-reasoning-off" ? { reasoning_effort: "none" } : {}),
           ...(tools.length ? { tools } : {}),
         });
-      const send = withAzureResponses(options.timeoutMs > FETCH_LIMIT_MS ? fetchPastLimit : fetch);
+      const baseSend = options.timeoutMs > FETCH_LIMIT_MS ? fetchPastLimit : fetch;
+      const send = route === "chat-reasoning-off" ? baseSend : withAzureResponses(baseSend);
       const response = await send(`${options.apiUrl}/${route === "responses" ? "responses" : "chat/completions"}`, {
         method: "POST",
         ...(messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === "image_url")) ? { redirect: "error" as const } : {}),
@@ -874,10 +875,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
             if (repeats?.stopped) { stopReason = "incomplete_action"; throw new ChatProtocolError(repeats.stopped); }
           }
           if (screenshotParts.length) messages.push({ role: "user", content: screenshotParts });
-          if (toolFailed && !denials.length && !turnEntry.ending && correctiveRounds < Math.max(turn.toolErrorCorrectiveRounds ?? 0, options.localModel ? LOCAL_CORRECTIVE_ROUNDS : 0)) {
-            correctiveRounds += 1;
-            messages.push({ role: "user", content: CORRECTIVE_ROUND });
-          }
         }
         if (!ok) throw new ChatProtocolError(stoppedAfter(`${MAX_CHAT_ROUNDS} steps`));
       } catch (value) {
