@@ -600,7 +600,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
       let failure: string | undefined;
       let toolFailed = false;
       let correctiveRounds = 0;
-      let pendingToolRecovery = false;
       const denials: string[] = [], failedCalls: string[] = [];
       const seenCalls = new Set<string>();
       let nudges = 0;
@@ -749,7 +748,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               // A person's "no" is never answered with another attempt; a failure may first get the configured corrective rounds.
               if (!denials.length && !turnEntry.ending && correctiveRounds < Math.max(turn.toolErrorCorrectiveRounds ?? 0, options.localModel ? LOCAL_CORRECTIVE_ROUNDS : 0)) {
                 correctiveRounds += 1;
-                pendingToolRecovery = true;
                 messages.push({ role: "user", content: CORRECTIVE_ROUND });
                 continue;
               }
@@ -785,9 +783,10 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           }
           if (seenCalls.size > MAX_TURN_TOOL_CALLS) throw new ChatProtocolError(stoppedAfter(`${MAX_TURN_TOOL_CALLS} tool calls`));
           messages.push(assistantReply(model, completion, completion.text || null, completion.toolCalls));
-          // After a corrective round, the failure stays pending only until the bot runs tools again. A local model that
-          // went on to use more tools has already reacted: a wrong guess, a search, then the right call is not a failed turn.
-          if ((pendingToolRecovery || options.localModel) && !denials.length) { toolFailed = false; failedCalls.length = 0; pendingToolRecovery = false; }
+          // A failure stays pending only until the bot runs tools again: one that went on to use more tools has read the error
+          // and reacted (a wrong guess, a bad query, then the right call), so its turn is not failed for it, on any model. The
+          // failed step still shows as failed; a failure in the last calls before the answer, or a person's no, still ends it.
+          if (!denials.length) { toolFailed = false; failedCalls.length = 0; }
           const screenshotParts: ChatContentPart[] = [];
           for (const call of completion.toolCalls) {
             abort.signal.throwIfAborted();
@@ -877,7 +876,6 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           if (screenshotParts.length) messages.push({ role: "user", content: screenshotParts });
           if (toolFailed && !denials.length && !turnEntry.ending && correctiveRounds < Math.max(turn.toolErrorCorrectiveRounds ?? 0, options.localModel ? LOCAL_CORRECTIVE_ROUNDS : 0)) {
             correctiveRounds += 1;
-            pendingToolRecovery = true;
             messages.push({ role: "user", content: CORRECTIVE_ROUND });
           }
         }
