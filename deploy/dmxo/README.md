@@ -5,7 +5,7 @@ The fork retains the upstream license, attribution and main branch. Custom sourc
 integrations live in `server/dmxo` and their call sites. Credentials, bot data,
 workspace files and server-specific configuration are kept outside Git.
 
-The server uses Azure GPT-6 Responses transport, bounded immediate tool recovery,
+The server uses the upstream Responses tool loop for Azure GPT-6, upstream tool recovery,
 patch/diff attachments, a guarded desktop startup wait, Git/AWS workspace identity
 provisioning and development tools in each native Cua desktop. Dedicated AWS
 identities are matched to their exact workspace before credentials are copied;
@@ -13,6 +13,13 @@ other desktops keep their shared configured role. The code grants no AWS or DB
 permissions by itself. Codex bot subprocesses disable the native GitHub plugin so
 GitHub API calls use the workspace Connected Apps/Composio identity. This does not
 uninstall the personal plugin or disable other Codex apps.
+
+Azure GPT-6 tool turns retain every Responses output item in its original order through
+the upstream turn-scoped replay map, including assistant `phase` and encrypted
+reasoning. The Azure Chat adapter remains for tool-free requests, including
+single-response helper calls. Recovery follows upstream commit
+`1d927396a3ec16965db6fec9d930ba4dacfd879b`: a later successful tool batch clears an
+earlier failure; a failed final batch or denial still fails the turn.
 
 ## Build
 

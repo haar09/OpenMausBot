@@ -15,7 +15,7 @@ import { removeTempDir } from "../testing/cleanup.ts";
 import { recordEvents } from "../testing/events.ts";
 import { toolBudgetOf } from "../tool-budgets.ts";
 import { isOpenAIChatModel, OpenAICompatDriver } from "./openai-compat.ts";
-import { createModelRoutes, isOpenAIAddress, responsesRequest, routeRefusal } from "./openai-responses.ts";
+import { createModelRoutes, isAzureOpenAIAddress, isOpenAIAddress, responsesRequest, routeRefusal } from "./openai-responses.ts";
 
 const OPENAI = "https://api.openai.com/v1";
 const MODEL = "gpt-6.1-sol";
@@ -117,13 +117,14 @@ async function fixture(script: Script, apiUrl = OPENAI) {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("fixture did not bind TCP");
   const local = `http://127.0.0.1:${address.port}/v1`;
+  const hosted = apiUrl === OPENAI || isAzureOpenAIAddress(apiUrl);
   const realFetch = globalThis.fetch;
-  vi.stubGlobal("fetch", (url: string | URL, init?: RequestInit) => realFetch(String(url).replace(OPENAI, local), init));
+  vi.stubGlobal("fetch", (url: string | URL, init?: RequestInit) => realFetch(String(url).replace(apiUrl, local), init));
   const helper = join(directory, "mcp.mjs");
   writeFileSync(helper, MCP_SCRIPT);
   const instance: ProviderInstance = await OpenAICompatDriver.create({
     instanceId: randomUUID(), displayName: "Responses fixture", enabled: true,
-    config: { url: apiUrl === OPENAI ? OPENAI : local, apiKeyEnv: "FIXTURE_CHAT_KEY", ...(apiUrl === OPENAI ? { catalog: "openai" } : {}) },
+    config: { url: hosted ? apiUrl : local, apiKeyEnv: "FIXTURE_CHAT_KEY", ...(apiUrl === OPENAI ? { catalog: "openai" } : {}) },
     environment: { FIXTURE_CHAT_KEY: KEY },
   });
   const recorder = recordEvents(instance.adapter);
@@ -156,6 +157,30 @@ const failureOf = (events: Array<{ type: string; message?: string }>) => events.
 const textOf = (events: Array<Record<string, any>>, kind: string) => events.filter((event) => event.type === "content.delta" && event.streamKind === kind).map((event) => event.delta).join("");
 
 describe("which API a model's turn uses", () => {
+  it("routes Azure GPT-6 tool turns through the native Responses loop", () => {
+    for (const url of ["https://example.openai.azure.com/openai/v1", "https://example.services.ai.azure.com/openai/v1/"]) {
+      expect(isAzureOpenAIAddress(url)).toBe(true);
+      const routes = createModelRoutes(url);
+      expect(routes.routeFor(MODEL, true)).toBe("responses");
+      expect(routes.routeFor("gpt-6", true)).toBe("responses");
+      expect(routes.routeFor("gpt-6-mini", true)).toBe("responses");
+      expect(routes.routeFor("gpt-60", true)).toBe("chat");
+      expect(routes.routeFor("gpt-4.1", true)).toBe("chat");
+      expect(routes.routeFor(MODEL, false)).toBe("chat");
+      expect(routes.advance(MODEL, "summaries-refused")).toBe(true);
+      expect(routes.summaries(MODEL)).toBe(false);
+      expect(routes.advance(MODEL, "summaries-refused")).toBe(false);
+      expect(routes.advance(MODEL, "responses-unavailable")).toBe(true);
+      expect(routes.routeFor(MODEL, true)).toBe("chat-reasoning-off");
+      expect(routes.advance(MODEL, "responses-unavailable")).toBe(false);
+      expect(routes.advance(MODEL, "tools-need-responses")).toBe(false);
+    }
+    for (const url of ["http://example.openai.azure.com/openai/v1", "https://example.openai.azure.com.evil.test/openai/v1", "https://openai.azure.com/openai/v1", "https://example.services.ai.azure.com.evil.test/openai/v1", "https://example.openai.azure.com/v1", "https://example.test/openai/v1", "not a url"]) {
+      expect(isAzureOpenAIAddress(url)).toBe(false);
+      expect(createModelRoutes(url).routeFor(MODEL, true)).toBe("chat");
+    }
+  });
+
   it("names OpenAI's own address, and nothing that only resembles it", () => {
     for (const url of [OPENAI, `${OPENAI}/`, "https://eu.api.openai.com/v1"]) expect(isOpenAIAddress(url)).toBe(true);
     for (const url of ["http://api.openai.com/v1", "https://api.openai.com.evil.test/v1", "https://openrouter.ai/api/v1", "https://example.com/api.openai.com/v1", "https://api.openai.com/openai/v1", "not a url"]) {
@@ -200,6 +225,65 @@ describe("which API a model's turn uses", () => {
   });
 });
 
+describe("Azure GPT-6 uses upstream Responses replay", () => {
+  it.each(["https://example.openai.azure.com/openai/v1", "https://example.services.ai.azure.com/openai/v1"])("preserves interleaved items, phases and call identities at %s", async (url) => {
+    ensureDirs();
+    const output = [
+      reasoningItem("rs_a"),
+      messageItem("First step.", "msg_a", "commentary"),
+      callItem("audit_write", '{"name":"first"}', "call_a", "fc_a"),
+      reasoningItem("rs_b"),
+      messageItem("Second step.", "msg_b", "commentary"),
+      callItem("audit_write", '{"name":"second"}', "call_b", "fc_b"),
+    ];
+    const f = await fixture((_call, response, nth) => {
+      if (nth === 1) events(response, [...output.map((item, index) => done(item, index)), completed(output)]);
+      else answer(response, "Both stored.");
+    }, url);
+    const { end, events: seen } = await f.turn({ system: "Be brief." });
+    expect(end).toMatchObject({ ok: true });
+    expect(f.paths()).toEqual(["/v1/responses", "/v1/responses"]);
+    for (const call of f.calls) {
+      expect(call.body).toMatchObject({ store: false, stream: true, include: ["reasoning.encrypted_content"], instructions: "Be brief." });
+      expect(call.body).not.toHaveProperty("messages");
+      expect(call.body).not.toHaveProperty("previous_response_id");
+    }
+    expect(f.calls[1]!.body.input.slice(1)).toEqual([
+      ...output,
+      { type: "function_call_output", call_id: "call_a", output: JSON.stringify({ ok: true, result: "Stored." }) },
+      { type: "function_call_output", call_id: "call_b", output: JSON.stringify({ ok: true, result: "Stored." }) },
+    ]);
+    expect(seen.filter((event) => event.type === "item.completed" && event.itemType === "tool").map((event) => event.ok)).toEqual([true, true]);
+    expect(JSON.stringify(seen)).not.toContain("sealed-");
+    expect(readFileSync(join(NATIVE_DIR, `${f.threadId}.ndjson`), "utf8")).not.toContain("sealed-");
+    expect(await f.turn({ threadId: randomUUID(), text: "A separate request." })).toMatchObject({ end: { ok: true } });
+    expect(f.calls[2]!.body.input).toEqual([{ role: "user", content: "A separate request." }]);
+  });
+
+  it("does not send an unavailable Responses route back through the Azure bridge", async () => {
+    const f = await fixture((call, response) => {
+      if (call.path.endsWith("/responses")) return reject(response, 404, "Not found");
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(`data: ${JSON.stringify({ choices: [{ delta: { content: "Done." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+    }, "https://example.openai.azure.com/openai/v1");
+    expect(await f.turn()).toMatchObject({ end: { ok: true } });
+    expect(f.paths()).toEqual(["/v1/responses", "/v1/chat/completions"]);
+    expect(f.calls[1]!.body.reasoning_effort).toBe("none");
+  });
+
+  it("keeps single-response helpers and their usage callback working", async () => {
+    const f = await fixture((_call, response) => reject(response, 200, JSON.stringify({
+      id: "resp_helper", status: "completed", model: MODEL,
+      output: [messageItem("Short title")], usage,
+    })), "https://example.openai.azure.com/openai/v1");
+    const onUsage = vi.fn();
+    await expect(f.instance.generateText!("Name this chat", { model: MODEL, onUsage })).resolves.toBe("Short title");
+    expect(f.paths()).toEqual(["/v1/responses"]);
+    expect(f.calls[0]!.body).toMatchObject({ stream: false, store: false });
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ model: MODEL, input: 40, output: 12, cachedInput: 8 }));
+  });
+});
+
 describe("the Responses request", () => {
   it("carries instructions, images, tool results and flat non-strict tools", () => {
     const body = responsesRequest({
@@ -217,6 +301,7 @@ describe("the Responses request", () => {
     });
     expect(body).toEqual({
       model: MODEL, stream: true, store: false, instructions: "Be brief.",
+      include: ["reasoning.encrypted_content"],
       reasoning: { summary: "auto" },
       tools: [{ type: "function", name: "audit_write", description: "Writes", parameters: { type: "object" }, strict: false }],
       input: [
