@@ -52,6 +52,16 @@ const reloaded = (patch: object, cfg: AppConfig = {}) =>
   changedInstanceIds(engineLaunches(instanceConfigs(cfg), {}), engineLaunches(instanceConfigs({ ...cfg, ...patch } as AppConfig), {}));
 
 describe("configuration boundaries", () => {
+  it("validates persistent lifetime coordination limits", () => {
+    const coordination = { depth: 2, totalRequests: 12, totalExecutions: 32 };
+    expect(parseStoredConfig({ coordination }).coordination).toEqual(coordination);
+    expect(parseConfigPatch({ coordination })).toEqual({ coordination });
+    expect(parseConfigPatch({ coordination: { totalRequests: 8 } })).toEqual({ coordination: { totalRequests: 8 } });
+    const invalidSettings: JsonValue[] = [{ depth: -1 }, { totalRequests: 0 }, { totalExecutions: 1.5 }, { totalExecutions: "32" }, { typo: 1 }];
+    for (const invalid of invalidSettings) {
+      expect(() => parseConfigPatch({ coordination: invalid })).toThrow("coordination");
+    }
+  });
   it("requires an explicit backup to opt into automatic recovery without reloading engines", () => {
     expect(parseStoredConfig({}).automaticRecovery).toBeUndefined();
     expect(parseConfigPatch({ automaticRecovery: { enabled: false } })).toEqual({ automaticRecovery: { enabled: false } });

@@ -27,6 +27,8 @@ export const loopGuardConfigSchema = z.object({
   stopAt: count.nullable().optional(),
   /** For bots on API models: times a turn that answers after a failed tool call is sent back to re-run it; 0 when unset. */
   correctiveRounds: z.number().int().min(0).max(MAX_CORRECTIVE_ROUNDS).optional(),
+  /** Completed tool calls per turn before a cooperative stop, on every engine; absent leaves this limit off. */
+  maxToolCalls: z.number().int().min(1).max(10_000).optional(),
 }).strict();
 export type LoopGuardConfig = z.output<typeof loopGuardConfigSchema>;
 

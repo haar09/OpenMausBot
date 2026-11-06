@@ -112,7 +112,7 @@ async function scenario(test: (f: any) => Promise<void>) {
       }, { timeout: 30_000 }).toBe(true);
     };
     try {
-      await test({ api, clive, mira, dataDir, script, say, db, roots, children, eventsOf, turns, turn, own, body, told, messages, chips, said, final,
+      await test({ api, clive, mira, dataDir, logPath: session.info.logPath, script, say, db, roots, children, eventsOf, turns, turn, own, body, told, messages, chips, said, final,
         gate, open, ready, settle, restart });
     } catch (error) {
       // What the fakes were told and what the chats hold, for a failure that only says a poll never matched.
@@ -172,6 +172,35 @@ it("S1 assigns a teammate under the envelope and resumes the Chief once with the
   expect(f.eventsOf(root.id).map((event: any) => event.kind)).toEqual(expect.arrayContaining(["enqueued", "settled"]));
   expect(f.eventsOf(child.id).map((event: any) => event.kind)).toEqual(expect.arrayContaining(["enqueued", "started", "settled", "reported"]));
 }), hostTimeout(60_000));
+
+it("keeps a configured root request budget after a successful child and tells the parent why rework was refused", () => scenario(async (f) => {
+  expect((await f.api("PATCH", "/api/config", { coordination: { totalRequests: 1, totalExecutions: 4, depth: 2 } })).status).toBe(200);
+  await f.restart("SIGTERM");
+  expect(JSON.parse(readFileSync(join(f.dataDir, "config.json"), "utf8")).coordination).toEqual({ totalRequests: 1, totalExecutions: 4, depth: 2 });
+  f.script(f.clive.id,
+    { key: "BUDGET-START", match: ["BUDGET-JOB"], steps: [{ arguments: { bot_ids: [f.mira.id], message: "BUDGET-BUILD: implement the parser." } }], reply: "Parser assigned." },
+    { key: "BUDGET-RESUME", match: [SETTLED, REPORT_FROM_MIRA], steps: [
+      { arguments: { bot_ids: [f.mira.id], message: "BUDGET-REWORK: add another feature.", rework: true }, expectError: true },
+      { tool: "list_threads", arguments: {} },
+    ], reply: "BUDGET-FINAL: parser completed; additional work was not started because the root budget is exhausted." });
+  f.script(f.mira.id, { key: "BUDGET-CHILD", match: ["BUDGET-BUILD"], reply: "Parser implemented; isolated tests passed." });
+  const job = f.clive.activeTaskId;
+  await f.say(f.clive.id, job, "BUDGET-JOB: have Mira implement the parser.");
+  await f.final(job, "BUDGET-FINAL", 45_000);
+  await expect.poll(() => f.roots()[0]?.status, { timeout: 15_000 }).toBe("completed");
+  expect(f.children()).toHaveLength(1);
+  expect(f.children()[0]).toMatchObject({ status: "completed", executions: 1 });
+  expect(f.turns(f.mira.id).map((record: any) => record.planKey)).toEqual(["BUDGET-CHILD"]);
+  const rework = f.turn("BUDGET-RESUME").evidence.find((entry: any) => entry.step?.arguments?.rework);
+  expect(rework.response.result.isError).toBe(true);
+  expect(JSON.stringify(rework.response)).toContain("Root request budget exhausted: 1 total assignments");
+  expect(f.eventsOf(f.roots()[0].id).filter((event: any) => event.kind === "budget")).toHaveLength(1);
+  expect(f.turns(f.clive.id).map((record: any) => record.planKey)).toEqual(["BUDGET-START", "BUDGET-RESUME"]);
+  const evidence = { fixture: "coordination-root-budget", logPath: f.logPath,
+    root: { status: f.roots()[0].status, executions: f.roots()[0].executions }, children: f.children().length,
+    refusal: rework.response.result, messages: (await f.messages(job)).filter((message: any) => message.kind === "text") };
+  if (process.env.OMB_VERIFICATION_EVIDENCE) writeFileSync(process.env.OMB_VERIFICATION_EVIDENCE, JSON.stringify(evidence, null, 2));
+}), hostTimeout(90_000));
 
 /** A question reaches the person on "Ask me first"; at Full access, the default, the Chief answers it instead. */
 const askMeFirst = async (f: any) => {

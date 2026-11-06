@@ -421,6 +421,7 @@ import { ComputerIdleTimer } from "./computer-idle.ts";
 import { CLOUD_COMPUTER_DID_NOT_START, CLOUD_COMPUTER_START_BUDGET_MS, CLOUD_COMPUTER_STARTING, createCloudComputerPower } from "./host/cloud-computer-power.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
+import { createTurnBudget } from "./host/turn-budget.ts";
 import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts"; import { createPersonFirst } from "./host/person-first.ts";
 import { claudeUserSkillsEnabled, settingsTurnFields } from "./turn-settings.ts";
 import { addHeldSecretScrubber, redactSecretsInText, scrubHeldSecrets } from "./redact.ts";
@@ -2258,7 +2259,7 @@ function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
   return task;
 }
 
-async function interruptDirectThread(botId: string, threadId: string, cause?: string): Promise<void> {
+async function interruptDirectThread(botId: string, threadId: string, cause?: string, outcome?: "stopped" | "budget"): Promise<void> {
   if (store.taskByThread(botId, threadId)?.activity === "parked.computer") store.setTaskActivity(botId, threadId, "idle");
   const requestOwner = directRequestOwners.get(threadId);
   if (requestOwner) {
@@ -2266,7 +2267,7 @@ async function interruptDirectThread(botId: string, threadId: string, cause?: st
     if (requestOwner.messageId) store.patchMessage(threadId, requestOwner.messageId, { requestCancelled: true });
   }
   stopParkedCards(threadId);
-  coordinator.stopAwaitingDirect(threadId, cause);
+  coordinator.stopAwaitingDirect(threadId, cause, outcome);
   const owner = botForThread(botId, threadId);
   const generation = directTurnGenerationByThread.get(threadId);
   cancelDirectTurnDispatch(botId, threadId);
@@ -3916,6 +3917,7 @@ const questionRouting = createQuestionRouting({ store, active: () => coordinator
   steer: async (threadId, text) => canSteerThread(threadId) && (await steerThread(threadId, text)) !== "refused", mayReach: outsideLineage.mayReach });
 const handoffTicks = createHandoffTicks(), coordinator: Coordinator = createCoordinator({
   dataDir: DATA_DIR,
+  runtimeLimits: cfg.coordination,
   now: Date.now, wrote: handoffTicks.kick,
   log: line => console.error("coordinator:", line),
   legacyThreads: {
@@ -4542,6 +4544,7 @@ store.onChange((change) => {
       stoppedTurns.delete(change.threadId);
       turnStops.forget(change.threadId);
       repeats.settle(change.threadId);
+      turnBudget.settle(change.threadId);
       routines?.forgetRoutineRequestReceiptsForThread(change.threadId);
       // A deleted destination must not strand an approval: keep each run's snapshot.
       for (const run of routines?.listRuns() ?? []) {
@@ -5010,6 +5013,7 @@ const watchdog = new TurnWatchdog({
     const stalledVmTarget = localVmThreadTargets.get(turn.threadId);
     revokeInternalCapabilitiesForThread(turn.threadId);
     repeats.settle(turn.threadId);
+    turnBudget.settle(turn.threadId);
     const bot = botForThread(turn.botId, turn.threadId);
     const routineRun = activeRoutineRunForThread(turn.threadId);
     void runningTurnInstance(bot, turn.threadId)?.adapter.interruptTurn(turn.threadId).catch(() => {});
@@ -7152,6 +7156,28 @@ const firstReplyRescue = createFirstReplyRescue({ store, botForThread, speaker: 
   engineName: (instanceId) => engineName(instanceId), quiet: (threadId) => isInternalTurn(threadId) || activeRoutineRunForThread(threadId) !== null,
   live: (threadId, turnId) => liveTurns.running(threadId) === turnId, requests: directRequestOwners });
 bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) liveTurns.onEvent(event); }); bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) firstReplyRescue.onEvent(event); });
+
+const turnBudget = createTurnBudget({
+  settings: () => ({ enabled: loopGuardSettings(cfg).enabled, maxToolCalls: cfg.loopGuard?.maxToolCalls }),
+  live: (threadId, turnId) => {
+    const bot = store.botByThread(threadId);
+    return liveTurns.running(threadId) === turnId && Boolean(bot && threadBusy(bot.id, threadId));
+  },
+  waiting: (threadId) => watchdog.waiting(threadId),
+  append: (threadId, tool) => {
+    const last = store.activePath(threadId).at(-1);
+    if (last?.role === "bot" && last.kind === "activity" && last.tool?.name === tool.name) return;
+    store.appendMessage(threadId, { role: "bot", kind: "activity", tool });
+  },
+  interrupt: async (threadId, cause) => {
+    const bot = store.botByThread(threadId);
+    if (!bot) return;
+    turnStops.stopping(threadId, liveTurnByThread.get(threadId), cause);
+    routines?.failThread(threadId, cause, { cause: "cap" });
+    await interruptDirectThread(bot.id, threadId, cause, "budget");
+  },
+});
+bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) turnBudget.onEvent(event); });
 
 // Registered after the main fold, so busy is already false here; not gated on event.ok, since queued messages are the user's own words.
 bus.subscribe((event: RuntimeEvent) => {

@@ -200,7 +200,15 @@ export class Runtime {
       const existing = this.store.children(parent.id).findLast(c => c.brief === brief && c.mode === mode && c.assignee.botId === target.botId &&
         c.assignee.destination.threadId === target.destination.threadId && c.assignee.destination.groupId === target.destination.groupId);
       if (existing && !(req.rework && isTerminal(existing))) return { ok: true, assignment: existing, duplicate: true };
+      if (root && this.store.all({ rootId: root.id }).some(node => node.assignee.botId === target.botId && node.outcome === "budget")) {
+        return refuse("This teammate already reached a budget limit for this request. Its completed work is preserved; report the remaining work instead of assigning it again. A new request is needed to continue.", "budget");
+      }
       if (parent.depth + 1 > this.limits.depth) return refuse(`Assignment depth limit reached (${this.limits.depth})`);
+      if (root && this.limits.totalRequests !== undefined && this.store.all({ rootId: root.id }).length - 1 >= this.limits.totalRequests) {
+        const reason = `Root request budget exhausted: ${this.limits.totalRequests} total assignments. No more work was started; report what is complete and what remains.`;
+        this.store.update(root, { kind: "budget", at: now, detail: reason });
+        return refuse(reason, "budget");
+      }
       if (root?.budgets && root.budgets.requests + 1 > this.limits.requests) {
         this.store.update(root, { kind: "budget", at: now, detail: `requests: ${root.budgets.requests} since last progress` });
         return refuse(`Request budget exhausted: ${this.limits.requests} requests without progress`, "budget");
@@ -331,6 +339,10 @@ export class Runtime {
       const group = n.assignee.destination.groupId;
       if (parent?.status === "running" && group !== undefined && parent.assignee.destination.groupId === group) { this.heldBehindTurn(n, "its requester's turn in the room is running"); continue; }
       const resumed = n.status === "resume";
+      if (this.limits.totalExecutions !== undefined && this.store.all({ rootId: n.rootId }).reduce((sum, node) => sum + node.executions, 0) >= this.limits.totalExecutions) {
+        this.cancelTree(n, `Root execution budget exhausted: ${this.limits.totalExecutions} total turns. Work already completed is preserved; a new request is needed to continue.`, "failed", "budget");
+        continue;
+      }
       if (!resumed) {
         const root = n.parentId ? this.store.get(n.rootId) : n;
         if (root?.budgets && root.budgets.executions + 1 > this.limits.executions) {
@@ -575,7 +587,8 @@ export class Runtime {
   /** The person stopped the requester's conversation, and stop means stop: everything it handed out ends with it, work
    * that never started and teammates mid-turn alike (and what they handed on), and nothing resumes the stopped
    * conversation. */
-  stopRequester(owner: Owner, reason = "Stopped by user"): void {
+  stopRequester(owner: Owner, reason = "Stopped by user", outcome: "stopped" | "budget" = "stopped"): void {
+    const status = outcome === "budget" ? "failed" : "cancelled";
     this.withBatch(() => {
       for (const snapshot of this.store.all({ nonTerminal: true })) {
         if (!ownsConversation(snapshot, owner)) continue;
@@ -584,10 +597,10 @@ export class Runtime {
         for (const child of this.store.children(n.id)) {
           if (isTerminal(child)) continue;
           const unstarted = child.status === "queued" && (child.executions === 0 || child.restart === "rerun");
-          this.cancelTree(child, !unstarted ? STOPPED_WITH_REQUEST : child.restart === "rerun" ? "Stopped before it resumed" : "Stopped before it started",
-            "cancelled", "stopped");
+          this.cancelTree(child, outcome === "budget" ? reason : !unstarted ? STOPPED_WITH_REQUEST : child.restart === "rerun" ? "Stopped before it resumed" : "Stopped before it started",
+            status, outcome);
         }
-        this.settle(n, "cancelled", "stopped", reason);
+        this.settle(n, status, outcome, reason);
       }
     });
   }

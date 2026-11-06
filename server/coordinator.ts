@@ -199,7 +199,7 @@ export interface Coordinator {
   awaitingTeammateThreads(): Set<string>;
   liveEdges(): LiveHandoffEdge[];
   /** The conversation stopped: its work and everything that work handed out end, and nothing resumes it. */
-  stopAwaitingDirect(threadId: string, reason?: string): void;
+  stopAwaitingDirect(threadId: string, reason?: string, outcome?: "stopped" | "budget"): void;
   /** The next start goes on with this thread's turn, so a shutdown's "cut" line would be false. */
   continuesAfterRestart(threadId: string): boolean;
   note(id: string): string | undefined;

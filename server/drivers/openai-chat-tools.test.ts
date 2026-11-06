@@ -1093,6 +1093,58 @@ describe("structured tool execution boundaries", () => {
     expect(await f.completed()).toMatchObject({ ok: true, usage: { input: 30, output: 6 } });
   });
 
+  it.each(["stream", "json"] as const)("preserves cached input across %s tool rounds without counting it twice", async (format) => {
+    const f = await fixture((_body, response, round) => {
+      const content = round === 1 ? { tool_calls: [toolCall()] } : { content: "Receipt verified." };
+      const finish_reason = round === 1 ? "tool_calls" : "stop";
+      const usage = { prompt_tokens: round * 10, completion_tokens: round * 2, prompt_tokens_details: { cached_tokens: round * 8 } };
+      if (format === "stream") sse(response, [chunk(content, finish_reason), { choices: [], usage }]);
+      else {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ choices: [{ message: content, finish_reason }], usage }));
+      }
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true, cost: null, usage: { input: 30, output: 6, cachedInput: 24 } });
+    expect(f.recorder.events.filter((event) => event.type === "thread.token-usage.updated")).toMatchObject([
+      { input: 10, output: 2, cachedInput: 8, contextTokens: 12 },
+      { input: 30, output: 6, cachedInput: 24, contextTokens: 24 },
+    ]);
+    expect(f.effects()).toHaveLength(1);
+  });
+
+  it.each([
+    { cache: [0, 0], expected: 0 },
+    { cache: [undefined, 8], expected: undefined },
+    { cache: [8, undefined], expected: undefined },
+    { cache: [null, 8], expected: undefined },
+    { cache: [-1, 8], expected: undefined },
+    { cache: ["8", 8], expected: undefined },
+  ])("keeps the cached total unknown unless every round reports it ($cache)", async ({ cache, expected }) => {
+    const f = await fixture((_body, response, round) => sse(response, [
+      round === 1 ? chunk({ tool_calls: [toolCall()] }, "tool_calls") : chunk({ content: "Receipt verified." }, "stop"),
+      { choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, prompt_tokens_details: { cached_tokens: cache[round - 1] } } },
+    ]));
+    await f.start({ approvalMode: "full" });
+    const end = await f.completed();
+    expect(end).toMatchObject({ ok: true, cost: null, usage: { input: 20, output: 4 } });
+    if (end.type !== "turn.completed") throw new Error("turn did not complete");
+    if (expected === undefined) expect(end.usage).not.toHaveProperty("cachedInput");
+    else expect(end.usage).toHaveProperty("cachedInput", expected);
+  });
+
+  it.each([1, 2])("does not label the cached total complete when round %i omits all usage", async (missingRound) => {
+    const f = await fixture((_body, response, round) => sse(response, [
+      round === 1 ? chunk({ tool_calls: [toolCall()] }, "tool_calls") : chunk({ content: "Receipt verified." }, "stop"),
+      ...(round === missingRound ? [] : [{ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, prompt_tokens_details: { cached_tokens: 8 } } }]),
+    ]));
+    await f.start({ approvalMode: "full" });
+    const end = await f.completed();
+    expect(end).toMatchObject({ ok: true, usage: { input: 10, output: 2 } });
+    if (end.type !== "turn.completed") throw new Error("turn did not complete");
+    expect(end.usage).not.toHaveProperty("cachedInput");
+  });
+
   it("returns denial to the model without treating a convincing final answer as successful execution", async () => {
     const f = await fixture((_body, response, round) => {
       if (round === 1) sse(response, [chunk({ tool_calls: [toolCall()] }, "tool_calls")]);

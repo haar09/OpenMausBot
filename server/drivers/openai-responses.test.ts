@@ -315,6 +315,26 @@ describe("the Responses request", () => {
 });
 
 describe("a model that refuses tools over Chat Completions, at OpenAI's address", () => {
+  it.each([undefined, null, -1, "8", 0, 8])("preserves reported cache counts and keeps invalid or absent counts unknown (%j)", async (cached_tokens) => {
+    const f = await fixture((call, response) => {
+      if (call.path.endsWith("/chat/completions")) reject(response, 400, refusalOf(MODEL));
+      else events(response, [{ type: "response.completed", response: {
+        status: "completed", output: [messageItem("Usage verified.")],
+        usage: { input_tokens: 40, output_tokens: 12, input_tokens_details: { cached_tokens } },
+      } }]);
+    });
+    const { end, events: seen } = await f.turn();
+    expect(end).toMatchObject({ ok: true, cost: null, usage: { input: 40, output: 12 } });
+    const update = seen.find((event) => event.type === "thread.token-usage.updated");
+    if (typeof cached_tokens === "number" && cached_tokens >= 0) {
+      expect(end.usage).toHaveProperty("cachedInput", cached_tokens);
+      expect(update).toHaveProperty("cachedInput", cached_tokens);
+    } else {
+      expect(end.usage).not.toHaveProperty("cachedInput");
+      expect(update).not.toHaveProperty("cachedInput");
+    }
+  });
+
   it("moves to Responses in the same turn and stays there", async () => {
     const f = await fixture((call, response) => {
       if (call.path.endsWith("/chat/completions")) reject(response, 400, refusalOf(MODEL));
@@ -325,8 +345,8 @@ describe("a model that refuses tools over Chat Completions, at OpenAI's address"
     expect(f.paths()).toEqual(["/v1/chat/completions", "/v1/responses"]);
     expect(f.calls[0]!.body).not.toHaveProperty("reasoning_effort");
     expect(textOf(first.events, "assistant_text")).toBe("Hello there.");
-    expect(first.events.find((event) => event.type === "thread.token-usage.updated")).toMatchObject({ input: 40, output: 12 });
-    expect(first.end).toMatchObject({ usage: { input: 40, output: 12 } });
+    expect(first.events.find((event) => event.type === "thread.token-usage.updated")).toMatchObject({ input: 40, output: 12, cachedInput: 8 });
+    expect(first.end).toMatchObject({ usage: { input: 40, output: 12, cachedInput: 8 }, cost: null });
 
     expect(await f.turn()).toMatchObject({ end: { ok: true } });
     expect(f.paths()).toEqual(["/v1/chat/completions", "/v1/responses", "/v1/responses"]);
@@ -399,7 +419,7 @@ describe("tool rounds over Responses", () => {
     ]);
     expect(textOf(seen, "reasoning_text")).toBe("Thinking it over.Thinking it over.");
     expect(seen.filter((event) => event.type === "item.completed" && event.itemType === "tool").map((event) => event.ok)).toEqual([true, true]);
-    expect(seen.find((event) => event.type === "turn.completed")).toMatchObject({ usage: { input: 120, output: 36 } });
+    expect(seen.find((event) => event.type === "turn.completed")).toMatchObject({ usage: { input: 120, output: 36, cachedInput: 24 }, cost: null });
   });
 
   it("keeps encrypted reasoning out of everything it logs or shows", async () => {

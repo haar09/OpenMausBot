@@ -781,6 +781,19 @@ describe("RuntimeCoordinator: stops", () => {
 describe("RuntimeCoordinator: a stop the person made is remembered", () => {
   const tick = () => sleep(2);
 
+  it("records a budget stop durably and refuses same-root rework without blocking a fresh user request", async () => {
+    const w = world(hold);
+    const { node } = send(w, chief, "gen-1", undefined, builder, "Build it");
+    w.coordinator.tick();
+    await tick();
+    w.coordinator.stopAwaitingDirect("builder-work", "Stopped after 40 tool calls", "budget");
+    expect(w.coordinator.node(node.id)).toMatchObject({ status: "failed", outcome: "budget", result: "Stopped after 40 tool calls", reported: true });
+    expect(w.host.runs[0]!.signal.aborted).toBe(true);
+    expect(() => send(w, chief, "gen-1", undefined, builder, "Try the remaining work", { rework: true })).toThrow("already reached a budget limit");
+    expect(send(w, { botId: "chief", threadId: "chief-fresh" }, "gen-fresh", undefined, builder, "Continue only the remaining work").node)
+      .toMatchObject({ status: "queued", botId: "builder" });
+  });
+
   it("keeps the work it stopped from coming back from that request, until the person asks again", async () => {
     const w = world(hold);
     const { node } = send(w, chief, "gen-1", undefined, builder, "Build it");

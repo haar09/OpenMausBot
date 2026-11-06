@@ -331,6 +331,10 @@ export interface Limits {
   requests: number;
   executions: number;
   wakes: number;
+  /** Lifetime child assignments under one root, including completed, failed and cancelled work. Unset leaves no lifetime cap. */
+  totalRequests?: number;
+  /** Lifetime executions across the root and its descendants, including resumes and retries. Unset leaves no lifetime cap. */
+  totalExecutions?: number;
   /** A queued assignment that never started within this is expired. */
   queueMs: number;
   /** No durable progress on a root for this long fails the tree. */

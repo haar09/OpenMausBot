@@ -221,6 +221,108 @@ describe("Runtime: one tree, one lane", () => {
     invariants(w);
   });
 
+  it("keeps the lifetime request budget after progress, while duplicate lookups are free", async () => {
+    const w = world(undefined, { totalRequests: 2 });
+    const root = w.runtime.begin(beginReq());
+    const first = ok(w.runtime.enqueue(toBot("builder", root.id)));
+    w.runtime.tick(); await flush();
+    expect(w.store.get(root.id)?.budgets?.requests).toBe(0);
+    const rework = ok(w.runtime.enqueue(toBot("builder", root.id, undefined, { rework: true })));
+    expect(rework.id).not.toBe(first.id);
+    w.runtime.tick(); await flush();
+    expect(w.runtime.enqueue(toBot("builder", root.id))).toMatchObject({ ok: true, duplicate: true, assignment: { id: rework.id } });
+    expect(w.runtime.enqueue(toBot("reviewer", root.id))).toMatchObject({ ok: false, outcome: "budget", reason: /Root request budget/ });
+    expect(w.runtime.enqueue(toBot("builder", root.id, undefined, { rework: true }))).toMatchObject({ ok: false, outcome: "budget" });
+    expect(w.store.children(root.id)).toHaveLength(2);
+    w.runtime.end(root.id, { ok: true, text: "Read the completed work" });
+    w.runtime.tick(); await flush();
+    expect(w.store.get(root.id)?.status).toBe("completed");
+    invariants(w);
+  });
+
+  it("shares lifetime requests across parallel branches and preserves them after restart", async () => {
+    const w = world(() => "hold", { totalRequests: 3 });
+    const root = w.runtime.begin(beginReq());
+    const a = ok(w.runtime.enqueue(toBot("builder-a", root.id)));
+    const b = ok(w.runtime.enqueue(toBot("builder-b", root.id)));
+    w.runtime.tick();
+    const child = ok(w.runtime.enqueue(toBot("reviewer-a", a.id)));
+    expect(w.runtime.enqueue(toBot("reviewer-b", b.id))).toMatchObject({ ok: false, outcome: "budget" });
+    await w.runner.release(a.id, { kind: "completed", text: "Review requested" });
+    await w.runner.release(b.id, { kind: "completed", text: "Done" });
+    w.runtime.end(root.id, { ok: true, text: "Waiting for results" });
+    w.runtime.close();
+    const next = world(() => "hold", w.limits, w.store);
+    next.runtime.tick();
+    expect(next.runner.runs.map(r => r.a.id)).toContain(child.id);
+    expect(next.runtime.enqueue(toBot("another-reviewer", child.id))).toMatchObject({ ok: false, outcome: "budget" });
+    expect(next.store.all({ rootId: root.id })).toHaveLength(4);
+    invariants(next);
+  });
+
+  it("admits parallel turns only up to the lifetime execution budget and never resets it on settlement", async () => {
+    const w = world(() => "hold", { totalExecutions: 3 });
+    const root = w.runtime.begin(beginReq());
+    const a = ok(w.runtime.enqueue(toBot("builder-a", root.id)));
+    const b = ok(w.runtime.enqueue(toBot("builder-b", root.id)));
+    const c = ok(w.runtime.enqueue(toBot("builder-c", root.id)));
+    w.runtime.tick();
+    expect(w.runner.runs.map(r => r.a.id)).toEqual([a.id, b.id]);
+    expect(w.store.get(c.id)).toMatchObject({ status: "failed", outcome: "budget", executions: 0 });
+    expect(w.runner.runs.every(r => !r.signal.aborted)).toBe(true);
+    await w.runner.release(a.id, { kind: "completed", text: "A ready" });
+    await w.runner.release(b.id, { kind: "completed", text: "B ready" });
+    expect(w.store.get(root.id)?.budgets?.executions).toBe(0);
+    w.runtime.end(root.id, { ok: true, text: "Waiting for results" });
+    w.runtime.tick(); await flush();
+    expect(w.runner.runs).toHaveLength(2);
+    expect(w.store.get(root.id)).toMatchObject({ status: "failed", outcome: "budget", executions: 1 });
+    expect(w.store.get(a.id)).toMatchObject({ status: "completed", result: "A ready" });
+    expect(w.store.get(b.id)).toMatchObject({ status: "completed", result: "B ready" });
+    invariants(w);
+  });
+
+  it("counts restart retries against the same lifetime execution budget, but gives a fresh user request its own budget", async () => {
+    const w = world(() => "hold", { totalExecutions: 2 });
+    const root = w.runtime.begin(beginReq());
+    const child = ok(w.runtime.enqueue(toBot("builder", root.id)));
+    w.runtime.tick();
+    w.runtime.end(root.id, { ok: true, text: "Waiting" });
+    w.runtime.close();
+    const next = world(undefined, w.limits, w.store);
+    next.runtime.tick(); await flush(); next.runtime.tick();
+    expect(next.runner.runs).toHaveLength(0);
+    expect(next.store.get(child.id)).toMatchObject({ status: "failed", outcome: "budget", executions: 1 });
+    expect(next.store.get(root.id)).toMatchObject({ status: "failed", outcome: "budget", executions: 1 });
+    const fresh = next.runtime.begin(beginReq({ brief: "Continue only what remains" }));
+    const freshChild = ok(next.runtime.enqueue(toBot("builder", fresh.id)));
+    next.runtime.tick(); await flush();
+    expect(next.runner.runs.map(r => r.a.id)).toEqual([freshChild.id]);
+    invariants(next);
+  });
+
+  it("does not reassign a budget-stopped teammate after a restart, even from another branch", async () => {
+    const w = world(() => "hold");
+    const root = w.runtime.begin(beginReq());
+    const a = ok(w.runtime.enqueue(toBot("builder-a", root.id)));
+    const b = ok(w.runtime.enqueue(toBot("builder-b", root.id)));
+    w.runtime.tick();
+    w.runtime.stopRequester({ threadId: "builder-a-work" }, "Tool call budget exhausted", "budget");
+    expect(w.store.get(a.id)).toMatchObject({ status: "failed", outcome: "budget" });
+    expect(w.runtime.enqueue(toBot("builder-a", b.id, "Try a different part", { rework: true })))
+      .toMatchObject({ ok: false, outcome: "budget", reason: /already reached a budget limit/ });
+    w.runtime.end(root.id, { ok: true, text: "Waiting" });
+    w.runtime.close();
+    const next = world(() => "hold", w.limits, w.store);
+    next.runtime.tick();
+    expect(next.store.get(b.id)?.status).toBe("running");
+    expect(next.runtime.enqueue(toBot("builder-a", b.id, "Try a new thread", {
+      rework: true, assignee: { botId: "builder-a", destination: { kind: "work_thread", threadId: "another-thread" } },
+    }))).toMatchObject({ ok: false, outcome: "budget" });
+    expect(next.store.all({ rootId: root.id })).toHaveLength(3);
+    invariants(next);
+  });
+
   it("expires a queue entry that never started and a question nobody answered, never as completed", async () => {
     const w = world(undefined, { queueMs: 1_000, inputWaitMs: 5_000 });
     const root = w.runtime.begin(beginReq());

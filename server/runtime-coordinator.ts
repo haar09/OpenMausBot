@@ -265,7 +265,7 @@ export class RuntimeCoordinator implements Coordinator {
       ...(target.groupId && requestBatchKey ? { batchKey: requestBatchKey } : {}),
     });
     if (!result.ok) {
-      if (result.outcome === "budget") throw new Error(BUDGET);
+      if (result.outcome === "budget") throw new Error(`${BUDGET}: ${result.reason}`);
       throw new Error(RUNTIME_DEPTH.test(result.reason) ? DEPTH : result.reason);
     }
     return { node: view(result.assignment, parent), duplicate: result.duplicate };
@@ -408,11 +408,11 @@ export class RuntimeCoordinator implements Coordinator {
     for (const n of this.live()) if (this.direct(n, threadId)) this.runtime.cancel(n.id, reason, "stopped");
   }
 
-  stopAwaitingDirect(threadId: string, reason = STOPPED_BY_USER): void {
+  stopAwaitingDirect(threadId: string, reason = STOPPED_BY_USER, outcome: "stopped" | "budget" = "stopped"): void {
     this.ready();
-    const stopping = reason === STOPPED_BY_USER ? this.live().filter(n => n.assignee.destination.threadId === threadId) : [];
+    const stopping = outcome === "stopped" && reason === STOPPED_BY_USER ? this.live().filter(n => n.assignee.destination.threadId === threadId) : [];
     const trees = stopping.map(n => ({ root: this.store.get(n.rootId), work: this.subtree(n).filter(a => !isTerminal(a)) }));
-    this.runtime.stopRequester({ threadId }, reason);
+    this.runtime.stopRequester({ threadId }, reason, outcome);
     for (const { root, work } of trees) if (root) this.rememberStop(root, work);
   }
 
