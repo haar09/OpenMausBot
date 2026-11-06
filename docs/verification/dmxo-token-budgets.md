@@ -4,7 +4,7 @@ The deployment enables lifetime limits in `config.json`:
 
 ```json
 {
-  "coordination": { "depth": 2, "totalRequests": 12, "totalExecutions": 32 },
+  "coordination": { "depth": 3, "totalRequests": 12, "totalExecutions": 32 },
   "loopGuard": { "enabled": true, "steerAt": 2, "stopAt": 3, "correctiveRounds": 1, "maxToolCalls": 60 },
   "context": { "autoCompact": true, "compactAt": 100000 }
 }
@@ -12,6 +12,7 @@ The deployment enables lifetime limits in `config.json`:
 
 Coordination settings are read at startup and require a server restart. The
 request budget counts every child under a root, including completed children.
+Depth three permits monitor → senior planner → coding planner → worker.
 Executions include resumes and restarts. Duplicate dispatch lookups do not count
 again. A new user request creates a fresh root. A worker stopped for a budget
 cannot be reissued under the same root, including after restart.
