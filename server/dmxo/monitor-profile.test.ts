@@ -8,7 +8,7 @@ describe("bounded monitoring profiles", () => {
   it("keeps source checks and continuity in a valid fresh-run routine without changing its schedule or identity", () => {
     const patch = monitorRoutinePatch(scope);
     const routine = sanitizeInput({ name: "Fixture monitor", botId: "monitor", schedule: { type: "interval", everyMinutes: 60, anchorAt: 1_800_000_000_000 }, ...patch }, 1_800_000_000_000);
-    expect(routine).toMatchObject({ botId: "monitor", continuity: true, timeoutMinutes: 10, schedule: { type: "interval", everyMinutes: 60 } });
+    expect(routine).toMatchObject({ botId: "monitor", continuity: true, schedule: { type: "interval", everyMinutes: 60 } });
     expect(patch.overlap).toBe("skip");
     expect(routine.overlap).not.toBe("queue");
     expect(patch).not.toHaveProperty("enabled");
@@ -21,11 +21,12 @@ describe("bounded monitoring profiles", () => {
     expect(routine.prompt).toContain("NOTHING NEW yazma");
   });
 
-  it("uses one escalation peer and retains the operator's independent access constraints", () => {
+  it("keeps communication access unchanged and retains the operator's independent access constraints", () => {
     const retained = "Use only the fixture read-only role. No writes to production.";
     const patch = monitorBotPatch("existing-planner", retained);
     expect(patch.modelSelection).toEqual({ instanceId: "claude", model: "claude-sonnet-5-5", effort: "low" });
-    expect(patch.peers).toEqual(["existing-planner"]);
+    expect(patch).not.toHaveProperty("peers");
+    expect(monitorRoutinePatch(scope)).not.toHaveProperty("timeoutMinutes");
     expect(patch.soul.endsWith(retained)).toBe(true);
     expect(patch.keepThreadModels).toBe(true);
     expect(patch).not.toHaveProperty("approvalMode");

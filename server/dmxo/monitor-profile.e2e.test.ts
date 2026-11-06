@@ -31,7 +31,7 @@ it("applies the monitor patches through the real API, uses fresh bounded continu
     }, 201);
     const patch = monitorRoutinePatch({ accountId: "123456789012", region: "eu-central-1", logGroups: ["/fixture/web"] });
     const { routine: saved } = await api<{ routine: Routine }>("PATCH", `/api/routines/${routine.id}`, patch);
-    expect(saved).toMatchObject({ id: routine.id, botId: bot.id, enabled: false, continuity: true, timeoutMinutes: 10, prompt: patch.prompt, schedule });
+    expect(saved).toMatchObject({ id: routine.id, botId: bot.id, enabled: false, continuity: true, prompt: patch.prompt, schedule });
     const longReport = `UTC fixture. AWS fixture group read. PostHog fixture read. Incident fingerprint fixture-one. ${"x".repeat(3000)} NOT_IN_BOUNDED_CARRY`;
     const partialReport = "AWS fixture group read: 0 errors. PostHog access denied; check incomplete.";
     const planPath = join(fixture.info.dataDir, "room-plan.json");

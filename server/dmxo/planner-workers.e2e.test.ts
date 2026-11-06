@@ -10,7 +10,7 @@ import { waitForExit } from "../testing/cleanup.ts";
 import { readHandoffs } from "../testing/handoff-rows.ts";
 import { codingPlannerPatch, codingWorkerPatch } from "./coding-team.ts";
 
-it("runs two Sonnet workers concurrently for one Opus plan, forbids cascading, and resumes the planner once", async () => {
+it("runs two Sonnet workers concurrently for one Opus plan, rejects work sent back to the requester, and resumes the planner once", async () => {
   const session = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
   const cli = (...args: string[]) => runControlOmb(args, { env: { OPENMAUSBOT_URL: session.info.url } }) as Promise<any>;
   const api = (path: string, body?: unknown, method = "POST") => request(path,
@@ -33,7 +33,7 @@ it("runs two Sonnet workers concurrently for one Opus plan, forbids cascading, a
     writeFileSync(planPath, JSON.stringify({
       [planner.id]: { steps: [...dispatch, dispatch[0]], reply: "Two implementation tasks assigned", resumeReply: "Both modules reviewed; checks passed" },
       ...Object.fromEntries(workers.map((worker, index) => [worker.id, {
-        steps: [{ arguments: { bot_ids: [workers[1 - index].id], message: "Unwanted worker cascade" }, expectError: true }],
+        steps: [{ arguments: { bot_ids: [planner.id], message: "Unwanted work sent back to requester" }, expectError: true }],
         readyFile: ready[index], gateFile: gates[index], writeFiles: { "worker-output.txt": `module-${index + 1}` },
         reply: `Module ${index + 1} implemented; fixture checks passed`,
       }])),
@@ -87,7 +87,7 @@ it("lets a monitor routine reach two parallel workers through Senior Planner and
   const cli = (...args: string[]) => runControlOmb(args, { env: { OPENMAUSBOT_URL: session.info.url } }) as Promise<any>;
   const api = (path: string, body?: unknown, method = "POST") => request(path,
     body === undefined ? {} : { method, body: JSON.stringify(body) }, session.info.url) as Promise<any>;
-  const coordination = { depth: 3, totalRequests: 12, totalExecutions: 32 };
+  const coordination = {};
   const evidencePath = `${session.info.logPath}.coding-team-depth-three.json`;
   let restarted: ChildProcess | undefined;
   try {
@@ -126,7 +126,7 @@ it("lets a monitor routine reach two parallel workers through Senior Planner and
       } })), reply: "Two bounded implementation tasks assigned", resumeReply: "Both modules reviewed; checks passed." },
       ...Object.fromEntries(workers.map((worker, index) => [worker.id, {
         readyFile: ready[index], gateFile: gate,
-        steps: [{ arguments: { bot_ids: [workers[1 - index].id], message: "Forbidden additional cascade" }, expectError: true }],
+        steps: [{ arguments: { bot_ids: [planner.id], message: "Forbidden work sent back to requester" }, expectError: true }],
         reply: `Fixture module ${index + 1} implemented and verified.`,
       }])),
     }));
