@@ -4,12 +4,19 @@ export interface MonitorScope {
   logGroups: readonly string[];
 }
 
+export const MONITOR_TOOL_GUIDANCE = [
+  "Araç erişimini bu koşuda gerçekten doğrula. Claude oturumunda Local VM komut aracının tam adı mcp__agents__vm_exec; command ve timeout_seconds alanlarıyla çağır. vm_exec kısa adını bağımsız araç adı olarak çağırma. Bu agents aracı başlangıçta yüklüdür; ToolSearch ertelenmiş araçları aradığından orada bulunmaması VM'nin bağlı olmadığını göstermez. Python, boto3 ve AWS CLI komutlarını sunucunun Bash aracı yerine bu VM aracında çalıştır.",
+  "PostHog için mevcut Composio bağlantısını kullan: gerekiyorsa ToolSearch ile select:mcp__composio__COMPOSIO_SEARCH_TOOLS ve select:mcp__composio__COMPOSIO_MULTI_EXECUTE_TOOL araçlarını yükle; tam adlarıyla çağır. Proje 302201 için POSTHOG_MCP_EXEC aracının gerçek şemasıyla son-saat sorgusunu çalıştır. Araç adını veya şemasını tahmin etme. Bağlantı yokluğu ancak gerçek araç/bağlantı yanıtıyla söylenebilir.",
+  "AWS ve PostHog kontrolleri bağımsızdır: birindeki hata diğerini denemeden bırakma nedeni değildir. Önceki rapordaki araç veya erişim hatasını bu koşunun durumu sayma. Yanlış kısa ad için No such tool available gelirse mevcut araç listesindeki tam adla düzelt; gerçek bağlantı/izin hatasını bundan ayrı raporla. Yalnızca gerçekten çalıştırılan sorgunun çıktısıyla kayıt sayısı veya sağlıklı sonucu bildir.",
+].join("\n\n");
+
 export function monitorBotPatch(plannerId: string, preservedInstructions = "") {
   if (!plannerId.trim() || /[\r\n\0]/u.test(plannerId)) throw new Error("Choose the existing monitoring escalation bot");
   return {
     modelSelection: { instanceId: "claude", model: "claude-sonnet-5-5", effort: "low" },
     keepThreadModels: true,
     soul: [
+      MONITOR_TOOL_GUIDANCE,
       "PostHog ve yetkilendirilmiş AWS kaynaklarında salt okunur izleme yap. İstenen zaman aralığını gerçekten sorgula; önceki raporu güncel kontrolün yerine koyma. Kaynakların kapsamını, kimliği, kayıt sayılarını ve eksik kontrolleri ayrı belirt. Sırları ve kişisel verileri çıktıya koyma.",
       "Sorgu sonuçlarını mümkün olduğunca kodla say ve özetle; modele ham log, tam erişilebilirlik ağacı veya uzun geçmiş dökümü taşıma. Bilinen proje, bölge ve grup kimliklerini kullan; erişim hatası yokken her koşuda araç/depo keşfini tekrarlama. Bir kaynağın erişilememesi sağlıklı olduğu anlamına gelmez.",
       "Yeni ve müdahale gerektiren bulguyu kısa kanıtla Senior Planner'a bir kez aktar. Aynı değişmemiş olay için yeni iş açma; önce mevcut açık işin durumunu kontrol et. Koordinasyon sonucunu beklemek için model/shell sorgulama döngüsü kurma. İzleme turunda kod yazma, PR açma, test/CI bekleme veya altyapı değiştirme; araştırma ve düzeltmeyi görev sahibine bırak.",
@@ -30,6 +37,7 @@ export function monitorRoutinePatch(scope: MonitorScope) {
     continuity: true,
     overlap: "skip" as const,
     prompt: [
+      MONITOR_TOOL_GUIDANCE,
       "Son bir saatin PostHog olaylarını VE aşağıdaki AWS CloudWatch gruplarını salt okunur kontrol et. Bu iki kaynaktan biri okunamadıysa kontrol eksiktir; sağlıklı veya NOTHING NEW olarak sunma. Önce UTC başlangıç/bitiş ve sorgu zamanını belirle. Önceki koşunun kısa raporu yalnızca değişiklik karşılaştırması içindir; eski sorguyu güncel okuma sayma.",
       `AWS: bölge ${scope.region}, beklenen hesap ${scope.accountId}, gruplar ${logGroups.join(", ")}. Her koşuda STS ile kullanılan kimliği ve hesabı doğrula. STS başarısız veya hesap farklıysa AWS okumasını durdur ve gerçek engeli bildir; yeni kimlik, izin veya altyapı oluşturma. Varsayılan Lightsail rolünü root kimliği sanma. Root anahtarını gösterme veya kalıcı dosyaya yazma; mevcut otomatik yenilenen salt okunur kimliği kullan.`,
       "Bilinen her grubu doğrudan FilterLogEvents ile oku; DescribeLogGroups reddi doğrudan okumanın reddi değildir. Sayfalamayı model turlarıyla değil tek bir kod çalışmasında tamamla. Her grubun okunan kayıt sayısını ve zaman aralığını ayrı tut. Hata belirlerken yapılandırılmış severity/status ve sayısal alanların değerini kullan; yalnızca alan adında 'error' bulunmasını hata sayma. Kodla özetle; sırları ve kişisel verileri ayıkla; her kaynaktan en fazla 10 temsili hata örneğini göster, normal logları dökme.",
