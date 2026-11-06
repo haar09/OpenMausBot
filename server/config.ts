@@ -19,7 +19,7 @@ export { CLAUDE_API_INSTANCE, OPENAI_API_INSTANCE, OPENROUTER_API_INSTANCE, XAI_
 import { DEFAULT_WINDOW_MINUTES, MAX_WINDOW_MINUTES } from "./cache-keepwarm.ts";
 import { PROVIDER_ICON_PRESETS, providerIconError } from "../shared/provider-icon.ts";
 import { helperStoredShape, type HelperConfig } from "./side-jobs.ts";
-import { loopGuardConfigSchema, type LoopGuardConfig } from "./host/loop-guard.ts";
+import { executionControlShape, type ExecutionControlConfig } from "./execution-control-config.ts";
 import { migrateLegacyFeatureFlags } from "./legacy-feature-flags.ts";
 import { settledFileCache, settledFileStamp } from "./settled-file.ts";
 import { isRemoteMcpServer, mcpServerServes, parseStoredMcpServer } from "./mcp-registry.ts"; import { postizKeyHeaders } from "./postiz/connection.ts";
@@ -436,13 +436,7 @@ const appConfigSchema = z.object({
   threads: threadsConfigSchema.optional(),
   /** Minimum days of decision-log month files kept; OMB_DECISION_RETENTION_DAYS wins. */
   decisions: z.object({ retentionDays: z.number().int().min(1).max(3650).optional() }).strict().optional(),
-  loopGuard: loopGuardConfigSchema.optional(),
-  /** Root delegation limits loaded at server startup; progress never resets lifetime caps. */
-  coordination: z.object({
-    depth: z.number().int().min(0).max(10).optional(),
-    totalRequests: z.number().int().min(1).max(1000).optional(),
-    totalExecutions: z.number().int().min(1).max(10000).optional(),
-  }).strict().optional(),
+  ...executionControlShape,
   safetyFloor: z.object({ enabled: z.boolean().optional() }).strict().optional(), // off by default: safetyFloorEnabled in server/safety-floor-gate.ts
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
@@ -467,7 +461,7 @@ const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers:
   .extend({ threads: threadsPatchSchema.optional(), newBots: newBotsPatchSchema.optional() });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
-export interface AppConfig extends HelperConfig {
+export interface AppConfig extends HelperConfig, ExecutionControlConfig {
   customDomain?: string;
   signIn?: { admins?: string[]; members?: string[] };
   /** Preferred selection for newly created bots; existing bots keep theirs. */
@@ -499,8 +493,6 @@ export interface AppConfig extends HelperConfig {
   openrouter?: { key?: string };
   budgets?: { monthlyUsd?: number; warnAtPercent?: number };
   decisions?: { retentionDays?: number };
-  loopGuard?: LoopGuardConfig;
-  coordination?: { depth?: number; totalRequests?: number; totalExecutions?: number };
   safetyFloor?: { enabled?: boolean };
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };

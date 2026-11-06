@@ -18,7 +18,7 @@ import { compactBudget, compactionReading, contextWindowFor, shouldCompact } fro
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker, roomResetNote } from "./room-context.ts";
 import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
-import { createRoomSessions } from "./host/room-sessions.ts";
+import { createConversationSessions } from "./host/conversation-sessions.ts";
 import { LentComputers, provenRequestPerson, SharedComputers, sharedComputerOperation } from "./shared-computers.ts"; import { lentScreenResult } from "./lent-screen-guidance.ts"; import { DeviceLinks } from "./device-links.ts";
 import { cloudHomeLendingRefusal, createCloudRoutineAuthors, ownerOnlyConversation } from "./cloud-lending.ts"; import { createOwnHome } from "./own-home.ts"; import { createPlacesElsewhere } from "./places-elsewhere.ts"; import { createPlacesElsewhereRoutes } from "./routes/places-elsewhere.ts"; import { assertRoomFolder } from "./room-folder.ts"; import { cloudConnectedAppsBrokerUrl, startCloudHomeConnectedApps, stopCloudHomeConnectedApps } from "./cloud-connected-apps.ts"; import { createTeamConnectionsHost } from "./host/team-connections-host.ts"; import { createCloudLendingTurns } from "./host/cloud-lending-turns.ts"; import { createTeamConnectionRoutes } from "./routes/team-connections.ts";
 import { botMemoryFiles, createLendingMemory } from "./lending-memory.ts";
@@ -323,7 +323,7 @@ import { createTtsRoutes } from "./routes/tts.ts";
 import { turnStartLogLine } from "./turn-log.ts";
 import { TurnStops, outwardActions, stoppedTurnOutcome, turnEvidence } from "./turn-outcome.ts";
 import { buildRecoveryText, buildTurnContext, engineIsFresh, replaysNatively } from "./turn-context.ts";
-import { Handoffs, handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
+import { handedStateUsable, isContextMessage, recordHanded, renderUnseen, sessionStart, unseenMessages, withUnseenMessages, type ContextMessage } from "./delta-context.ts";
 import { extractReplayImages, extractTurnImages } from "./turn-images.ts";
 import { callTitleExcerpt } from "./thread-title.ts";
 import { generateThreadTitle, llmThreadTitlesEnabled } from "./thread-title-generate.ts";
@@ -421,8 +421,8 @@ import { ComputerIdleTimer } from "./computer-idle.ts";
 import { CLOUD_COMPUTER_DID_NOT_START, CLOUD_COMPUTER_START_BUDGET_MS, CLOUD_COMPUTER_STARTING, createCloudComputerPower } from "./host/cloud-computer-power.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { createTurnBudget } from "./host/turn-budget.ts";
-import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts"; import { createPersonFirst } from "./host/person-first.ts";
+import { createExecutionGuards } from "./host/execution-guards.ts";
+import { createPersonFirst } from "./host/person-first.ts";
 import { claudeUserSkillsEnabled, settingsTurnFields } from "./turn-settings.ts";
 import { addHeldSecretScrubber, redactSecretsInText, scrubHeldSecrets } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
@@ -7116,36 +7116,21 @@ async function compactConversation(input: {
   }
 }
 
-const handoffs = new Handoffs({
-  order: (threadId) => store.activePath(threadId).filter(isContextMessage).map((m) => m.id),
-  read: (botId, threadId, instanceId) => store.taskByThread(botId, threadId)?.handedMessages?.[instanceId],
-  write: (botId, threadId, instanceId, state) => store.setHandedMessages(botId, threadId, instanceId, state),
-  replies: (threadId, turnId) => store.activePath(threadId)
-    .filter((m) => m.role === "bot" && m.kind === "text" && !m.from && m.turnId === turnId).map((m) => m.id),
-});
-const roomSessions = createRoomSessions({ settings: () => cfg.context, messagesFor: (threadId) => store.messagesFor(threadId) });
+const { handoffs, roomSessions } = createConversationSessions({ store, settings: () => cfg.context });
 const nativeCompactTokens = (instance: { driverKind: string; instanceId: string }) => instance.driverKind === "claudeAgent" ? Number(autoCompactWindow({ ...process.env, ...cfg.instances?.[instance.instanceId]?.environment })) : undefined;
 
-const loopingEngine = (threadId: string, bot = store.botByThread(threadId)) => bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined;
-const canSteerThread = (threadId: string) => {
-  const engine = loopingEngine(threadId);
-  return admit("direct-busy", { pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
-    engineCanSteer: Boolean(engine?.capabilities.queueing && engine.steer) }).action === "steer";
-};
-const steerThread = async (threadId: string, text: string) => (await loopingEngine(threadId)?.steer?.(threadId, text)) ?? "refused";
-const repeats = createLoopGuard({
-  settings: () => loopGuardSettings(cfg),
-  append: (threadId, tool) => void store.appendMessage(threadId, { role: "bot", kind: "activity", tool }),
-  live: (threadId) => { const bot = store.botByThread(threadId); return Boolean(bot && threadBusy(bot.id, threadId)); },
-  waiting: (threadId) => watchdog.waiting(threadId),
-  canSteer: canSteerThread, steer: steerThread,
-  interrupt: async (threadId, cause) => {
-    const bot = store.botByThread(threadId);
-    if (!bot) return;
-    turnStops.stopping(threadId, liveTurnByThread.get(threadId), cause);
-    routines?.failThread(threadId, `${cause.charAt(0).toUpperCase()}${cause.slice(1)}`, { cause: "cap" });
-    await interruptDirectThread(bot.id, threadId, cause);
-  },
+const { repeats, turnBudget, canSteerThread, steerThread } = createExecutionGuards({
+  store,
+  config: () => cfg,
+  engine: (threadId) => { const bot = store.botByThread(threadId); return bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined; },
+  pendingComputerSelection: (threadId) => Boolean(computerSelectionTurns.get(threadId)?.selected),
+  threadBusy,
+  watchdog,
+  turnStops,
+  liveTurnByThread,
+  liveTurns,
+  routines: () => routines,
+  interruptDirectThread,
 });
 bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) repeats.onEvent(event); });
 const personFirst = createPersonFirst({ firstMs: Number(process.env.OMB_PERSON_FIRST_MS) || undefined, waiting: (threadId) => watchdog.waiting(threadId) || activeRoutineRunForThread(threadId) !== null,
@@ -7157,26 +7142,6 @@ const firstReplyRescue = createFirstReplyRescue({ store, botForThread, speaker: 
   live: (threadId, turnId) => liveTurns.running(threadId) === turnId, requests: directRequestOwners });
 bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) liveTurns.onEvent(event); }); bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) firstReplyRescue.onEvent(event); });
 
-const turnBudget = createTurnBudget({
-  settings: () => ({ enabled: loopGuardSettings(cfg).enabled, maxToolCalls: cfg.loopGuard?.maxToolCalls }),
-  live: (threadId, turnId) => {
-    const bot = store.botByThread(threadId);
-    return liveTurns.running(threadId) === turnId && Boolean(bot && threadBusy(bot.id, threadId));
-  },
-  waiting: (threadId) => watchdog.waiting(threadId),
-  append: (threadId, tool) => {
-    const last = store.activePath(threadId).at(-1);
-    if (last?.role === "bot" && last.kind === "activity" && last.tool?.name === tool.name) return;
-    store.appendMessage(threadId, { role: "bot", kind: "activity", tool });
-  },
-  interrupt: async (threadId, cause) => {
-    const bot = store.botByThread(threadId);
-    if (!bot) return;
-    turnStops.stopping(threadId, liveTurnByThread.get(threadId), cause);
-    routines?.failThread(threadId, cause, { cause: "cap" });
-    await interruptDirectThread(bot.id, threadId, cause, "budget");
-  },
-});
 bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) turnBudget.onEvent(event); });
 
 // Registered after the main fold, so busy is already false here; not gated on event.ok, since queued messages are the user's own words.

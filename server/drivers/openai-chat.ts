@@ -20,6 +20,7 @@ import { assertImageTransport, chatImageBudget, chatToolImages, chatUserContent,
 import { promptHalves, volatileContextNote, withContextNote } from "./prompt-split.ts";
 import { createChatToolApproval, refusal } from "./chat-tool-approval.ts";
 import { ChatProtocolError, ChatReasoningDetails, ChatToolCalls, object, type ChatToolCall } from "./openai-chat-protocol.ts";
+import { ChatUsageTotals, usageFrom, type ChatCompletionUsage, type OpenAIUsage as Usage } from "./openai-chat-usage.ts";
 import { completionError, httpErrorDetail, refusedToolCall, refusedToolCallFailure, rejectsReasoningReplay, rejectsToolsParameter, RejectedToolCallError, UnsupportedChatToolsError, UnsupportedReasoningReplayError, type ProviderBody } from "./openai-chat-refusals.ts";
 import { ChatRepeatGuard } from "./chat-repeat-guard.ts";
 import { TextCallHoldback, textToolCalls } from "./chat-text-tool-calls.ts";
@@ -44,12 +45,6 @@ export interface OpenAIChatMessage {
   reasoning_details?: Record<string, unknown>[];
 }
 
-interface Usage {
-  input: number;
-  output: number;
-  cachedInput?: number;
-}
-
 export interface Completion {
   text: string;
   reasoning: string;
@@ -70,7 +65,7 @@ interface CompletionJson extends ProviderBody {
     delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; reasoning_details?: unknown; tool_calls?: unknown; function_call?: unknown };
     finish_reason?: string | null;
   }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; cost?: number };
+  usage?: ChatCompletionUsage;
   /** Groq reports streaming usage in its final x_groq envelope. */
   x_groq?: { usage?: CompletionJson["usage"] };
 }
@@ -130,16 +125,6 @@ interface RuntimeOptions<Config> {
    * to fix a failed call instead of ending the turn on it. */
   localModel?: boolean;
 }
-
-const usageFrom = (usage: CompletionJson["usage"]): Usage | null => {
-  if (!usage) return null;
-  const cachedInput = usage.prompt_tokens_details?.cached_tokens;
-  return {
-    input: usage.prompt_tokens ?? 0,
-    output: usage.completion_tokens ?? 0,
-    ...(typeof cachedInput === "number" && Number.isFinite(cachedInput) && cachedInput >= 0 ? { cachedInput } : {}),
-  };
-};
 
 const completionUsage = (json: CompletionJson) => json.usage ?? json.x_groq?.usage;
 
@@ -600,9 +585,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
 
     void (async () => {
       let tools: ChatToolSession | undefined;
-      const usage: Usage = { input: 0, output: 0 };
-      let hasUsage = false;
-      let completeCachedUsage = true;
+      const turnUsage = new ChatUsageTotals();
+      const usage = turnUsage.total;
       let ok = false;
       let stopReason: string | null = null;
       let failure: string | undefined;
@@ -729,16 +713,8 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
           }
           native("in", options.nativeLog.incoming(completion));
           unread = [];
-          if (completion.usage?.cachedInput === undefined) {
-            completeCachedUsage = false;
-            delete usage.cachedInput;
-          } else if (completeCachedUsage) {
-            usage.cachedInput = (usage.cachedInput ?? 0) + completion.usage.cachedInput;
-          }
+          turnUsage.add(completion.usage);
           if (completion.usage) {
-            usage.input += completion.usage.input;
-            usage.output += completion.usage.output;
-            hasUsage = true;
             const contextWindow = options.models().options.find((entry) => entry.id === model)?.contextWindow;
             // Accounting sums the turn; context occupancy is the latest round only.
             emit({ ...base(turn.threadId, turnId), type: "thread.token-usage.updated", ...usage,
@@ -920,7 +896,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
               turnId,
               model,
               usage,
-              hasUsage,
+              hasUsage: turnUsage.available,
               failure,
               toolCalls: seenCalls.size,
               messages,
@@ -930,7 +906,7 @@ export function createOpenAIChatRuntime<Config>(options: RuntimeOptions<Config>)
         }
         active.delete(turn.threadId);
         emit({ ...base(turn.threadId, turnId), type: "turn.completed", ok, stopReason, cost: null,
-          ...(hasUsage && (options.includeUsageInCompleted || seenCalls.size) ? { usage } : {}),
+          ...(turnUsage.available && (options.includeUsageInCompleted || seenCalls.size) ? { usage } : {}),
           ...(denials.length ? { denials } : {}),
         });
         resolveDone();
