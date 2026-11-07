@@ -12921,6 +12921,7 @@ describe("bot memory API", () => {
       writeFileSync(join(designs, "PREVIEW.jpg"), "jpeg-this-turn");
       const attached = await attachWith(token, join(designs, "PREVIEW.jpg"));
       expect(attached.status).toBe(200);
+      expect(await attached.json()).toMatchObject({ attachmentId: expect.any(String), sha256: expect.stringMatching(/^[a-f0-9]{64}$/), bytes: 14 });
       const old403 = await attachWith(token, old);
       expect(old403.status).toBe(403);
       expect(((await old403.json()) as { error: string }).error).toContain("not saved during this turn");

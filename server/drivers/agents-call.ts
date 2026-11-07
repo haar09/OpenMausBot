@@ -212,7 +212,7 @@ export async function callTool(called: string, input: Json, context: ToolCallCon
       body: JSON.stringify({ path: args.path, ...(typeof args.name === "string" ? { name: args.name } : {}) }),
     });
     if (!ok) return { text: String(body.error ?? "Could not attach that file."), isError: true };
-    return { text: `Attached ${String(body.name ?? "the file")} (${Number(body.bytes ?? 0)} bytes). It now appears in the chat with a preview.` };
+    return { text: `Attached ${String(body.name ?? "the file")} (${Number(body.bytes ?? 0)} bytes). It now appears in the chat with a preview.\n${JSON.stringify({ attachment_id: body.attachmentId, sha256: body.sha256, requester_copy: body.requesterCopy, requester_copy_error: body.requesterCopyError })}\nInclude the requester_copy path and checksum in your result when present; that path belongs to the requester’s VM.` };
   }
   if (CARD_TOOL_NAMES.has(name)) return callCardTool(name, args, context);
   if (RESEARCH_TOOL_NAMES.has(name)) return callResearchTool(name, args, context);

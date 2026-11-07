@@ -204,7 +204,7 @@ import {
   newId,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
-import { recoveryCapabilityError, startupBackups } from "./automatic-recovery.ts";
+import { recoveryCapabilityError, startupBackups } from "./automatic-recovery.ts"; import { handoffAttachedFile } from "./dmxo/assignment-file-handoff.ts";
 import { createQuotaSwitchHost } from "./host/quota-switch.ts"; import { quotaSwitchEnabled } from "./quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import { createMcpServersHost } from "./host/mcp-servers-host.ts"; import { createLimitTakeover, signedOutStop } from "./host/limit-takeover.ts";
@@ -13316,8 +13316,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
         threadBusy, queuedThreadPosition, queuedReason: queuedStatus,
       }), createToolTimingRoute(usageTrace, internalCapability.threadId)], { req, res, url, path, method, auth, json, readBody })) return;
       if (method === "POST" && path === "/api/internal/attach-file") {
-        const from = internalSender;
-        const threadId = internalCapability.threadId;
+        const from = internalSender, threadId = internalCapability.threadId;
         const source = connectorThread(from.id, threadId);
         if (!source) return json(res, 403, { error: "source conversation does not belong to sender" });
         const body = await readInternalBody();
@@ -13362,7 +13361,8 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           const label = saved.attachment.kind === "file"
             ? saved.attachment.name
             : (requestedName?.trim() || requestedPath.split(/[\\/]/).at(-1) || "image");
-          return json(res, 200, { ok: true, name: label, bytes: saved.bytes });
+          const shared = await handoffAttachedFile(saved, { turn: internalCapability, node: (id) => coordinator.node(id), computer: (id) => store.bot(id)?.computer, mayDeliver: (child, parent) => !keptPrivate({ child: teamHost.privateTo(child.threadId), parent: teamHost.privateTo(parent.threadId) }) && outsideLineage.mayReach(child.threadId, parent.threadId), perBotVm: cfg.localVm?.mode === "per-bot", active: () => internalCapabilityIsActive(internalCapability) });
+          return json(res, 200, { ok: true, name: label, bytes: saved.bytes, ...shared });
         } catch (error) {
           const status = typeof (error as { status?: unknown }).status === "number" ? (error as { status: number }).status : 500;
           const message = status === 404
