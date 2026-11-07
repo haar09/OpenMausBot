@@ -42,7 +42,7 @@ function snapshot(root: string): Snapshot {
 
 /** VM shell edits are MCP calls, so native Edit/Write hook matchers never see their file changes. */
 export async function containerExecWithDesignHook(
-  target: LocalVmTarget, command: string, options: Parameters<typeof execute>[2] = {},
+  target: LocalVmTarget, command: string, options: Parameters<typeof execute>[2] & { hookAllowed?: () => boolean } = {},
 ): Promise<ContainerExecResult> {
   const before = snapshot(target.workspaceDir);
   const result = await execute(target, command, options);
@@ -54,6 +54,7 @@ export async function containerExecWithDesignHook(
   }
   const notes: string[] = [];
   for (const [project, paths] of changed) {
+    if (options.hookAllowed && !options.hookAllowed()) break;
     const guest = `/home/cua/workspace/${relative(target.workspaceDir, project)}`;
     // Skill executables remain inside the bot's VM; workspace content never executes in the host process.
     const scan = `cd ${quote(guest)} && ./.agents/skills/impeccable/scripts/impeccable detect --json ${paths.map(quote).join(" ")}`;

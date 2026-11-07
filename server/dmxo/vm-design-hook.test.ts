@@ -49,3 +49,11 @@ it("checks the first UI file added to an already-enabled empty project", async (
     return { code: 0, stdout: "[]", stderr: "" };
   } });expect(calls).toBe(2);expect(result.stdout).toContain("No design findings");
 });
+
+it("does not start a detector command after the turn or VM control is revoked", async () => {
+  const { project, target } = fixture();let allowed = true;let calls = 0;
+  const result = await containerExecWithDesignHook(target, "edit before takeover", { runtime: "docker", hookAllowed: () => allowed, exec: async () => {
+    calls++;writeFileSync(join(project, "src/page.css"), ".changed { color: red }");allowed = false;
+    return { code: 0, stdout: "original command finished", stderr: "" };
+  } });expect(calls).toBe(1);expect(result.stdout).toBe("original command finished");
+});

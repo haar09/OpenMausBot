@@ -13387,7 +13387,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
             return json(res, 409, { error: "The Local VM is no longer available to this turn." });
           }
           const result = await containerExec(vm, typeof body.command === "string" ? body.command : "", {
-            runtime,
+            runtime, hookAllowed: () => internalCapabilityIsActive({ ...internalCapability, localVmTarget: vm }) && !botComputerControlSnapshot(internalSender.id).held,
             timeoutSeconds: typeof body.timeout_seconds === "number" ? body.timeout_seconds : undefined,
           });
           localVmIdleFor(vm).touch();
