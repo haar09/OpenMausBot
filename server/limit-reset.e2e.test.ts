@@ -30,7 +30,7 @@ interface Fixture {
   restart: () => Promise<void>;
 }
 
-async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: boolean; codex?: false; signedOut?: boolean }, check: (fixture: Fixture) => Promise<void>) {
+async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: boolean; codex?: false; signedOut?: boolean; apiBackup?: boolean; codexLimited?: boolean }, check: (fixture: Fixture) => Promise<void>) {
   const fixture = await launchVerificationServer({});
   const { dataDir, url, logPath } = fixture.info;
   const limitedFile = join(dataDir, "claude-limited.json");
@@ -60,7 +60,8 @@ async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: bool
     const config = JSON.parse(readFileSync(configPath, "utf8"));
     config.instances.claude.environment = { ...config.instances.claude.environment, FAKE_CLAUDE_LIMITED_FILE: limitedFile, FAKE_CLAUDE_PROMPTS: promptsFile, FAKE_CLAUDE_TOOL_CALLS: "[]",
       ...(setup.signedOut ? { FAKE_CLAUDE_MODE: "not-logged-in" } : {}) };
-    if (setup.codex !== false) config.instances.codex = { driver: "codex", config: { cli: fileURLToPath(new URL("./testing/fake-codex-app-server.ts", import.meta.url)) } };
+    if (setup.codex !== false) config.instances.codex = { driver: "codex", config: { cli: fileURLToPath(new URL("./testing/fake-codex-app-server.ts", import.meta.url)) }, ...(setup.codexLimited ? { environment: { FAKE_CODEX_MODE: "usage-limit" } } : {}) };
+    if (setup.apiBackup) config.instances.codexApi = { driver: "codex", displayName: "API fixture", access: "api", config: { cli: fileURLToPath(new URL("./testing/fake-codex-app-server.ts", import.meta.url)), managed: { url: "http://127.0.0.1:1/v1", models: [codex.model] } }, environment: { CODEX_HOME: join(dataDir, "api-codex"), OPENMAUSBOT_COMPANY_API_KEY: "synthetic-api-fixture", FAKE_CODEX_DUMP: join(dataDir, "api-codex-dump.json") } };
     if (setup.secondClaude) config.instances.claudeWork = { ...config.instances.claude, displayName: "Second Claude sign-in" };
     if (setup.recovery) config.automaticRecovery = setup.recovery;
     writeFileSync(configPath, JSON.stringify(config));
@@ -112,6 +113,37 @@ async function withLimitFixture(setup: { recovery?: unknown; secondClaude?: bool
 
 const messagesOf = async (api: Fixture["api"], threadId: string) => (await api("GET", `/api/threads/${threadId}/messages?limit=200`)).messages as any[];
 const recoveryLines = (messages: any[]) => messages.filter((message) => message.tool?.name?.startsWith("recovery:")).map((message) => message.tool.name as string);
+
+it("continues through two exhausted subscriptions to the chosen API in the same workspace", async () => {
+  await withLimitFixture({ apiBackup: true, codexLimited: true }, async ({ api, control, limit, dataDir, evidence }) => {
+    limit(Math.floor(Date.now() / 1000) + 3_600);
+    const { bot } = await control("new-bot", "--name", "Subscription to API");
+    const threadId = bot.activeTaskId;
+    const backup = { instanceId: "codexApi", model: codex.model };
+    await api("PATCH", `/api/bots/${bot.id}`, { fallback: [codex, backup] });
+    const state = async () => (await api("GET", "/api/bots")).bots.find((entry: any) => entry.id === bot.id);
+    const before = await state();
+    const { task: sibling } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Keep the subscription default" });
+    await control("send", "--bot", bot.id, "--task", threadId, "--text", "Finish the report using the chosen API if both subscriptions are exhausted.");
+    expect((await control("wait", "--bot", bot.id, "--task", threadId, "--timeout", "30")).status).toBe("settled");
+    const messages = await messagesOf(api, threadId);
+    expect(messages.find((message) => message.role === "user")?.text).toContain("using the chosen API");
+    expect(messages.findLast((message) => message.role === "bot" && message.kind === "text")).toMatchObject({ text: "done from fake codex", turnSucceeded: true });
+    expect(recoveryLines(messages)[0]).toContain("so Codex took over");
+    expect(messages.some((message) => message.tool?.name === "notice: continuing on API fixture after hitting the usage limit")).toBe(true);
+    const after = await state();
+    expect(after.modelSelection).toEqual(before.modelSelection);
+    const task = after.tasks.find((entry: any) => entry.threadId === threadId);
+    expect(task.modelSelection).toEqual(backup);
+    expect(task.approvalMode).toEqual(before.tasks.find((entry: any) => entry.threadId === threadId).approvalMode);
+    expect(after.tasks.find((entry: any) => entry.threadId === sibling.threadId).modelSelection).not.toEqual(backup);
+    const dump = JSON.parse(readFileSync(join(dataDir, "api-codex-dump.json"), "utf8"));
+    expect(dump.env.OPENMAUSBOT_COMPANY_API_KEY).toBe("synthetic-api-fixture");
+    expect(dump.env.CODEX_HOME).toBe(join(dataDir, "api-codex"));
+    expect(dump.calls.find((call: any) => call.method === "thread/start").params.cwd).toBe(task.cwd);
+    evidence.push({ before, after, messages });
+  });
+}, 120_000);
 
 it("with no other AI to carry on, the stopped turn's Continue sets up a run that continues the conversation once the limit resets", async () => {
   await withLimitFixture({ codex: false }, async ({ api, control, limit, lift, claudePrompts, evidence }) => {
