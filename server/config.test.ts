@@ -584,6 +584,7 @@ describe("configuration boundaries", () => {
     });
     expect(localVmMode({ localVm: { mode: "per-bot" } })).toBe("per-bot");
     expect(localVmMaxInstances({ localVm: { maxInstances: 3 } })).toBe(3);
+    expect(parseConfigPatch({ localVm: { mode: "per-bot", maxInstances: 10 } })).toEqual({ localVm: { mode: "per-bot", maxInstances: 10 } });
   });
 
   it("accepts pool mode with the same bounded seat count", () => {
@@ -662,7 +663,7 @@ describe("configuration boundaries", () => {
     expect(showToolCallsEnabled({ features: { showToolCalls: true } })).toBe(true);
   });
 
-  it.each([0, 1.5, 9, "2", null])("rejects an invalid per-bot VM limit: %j", (maxInstances) => {
+  it.each([0, 1.5, 13, "2", null])("rejects an invalid per-bot VM limit: %j", (maxInstances) => {
     expect(() => parseConfigPatch({ localVm: { maxInstances } })).toThrow("localVm.maxInstances");
   });
 

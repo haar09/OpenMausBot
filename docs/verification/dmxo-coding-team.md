@@ -47,3 +47,17 @@ The planner's instruction to delegate implementation is a role instruction;
 existing duplicate and ancestor-cycle protections are server-enforced. Test real coding quality on an
 isolated repository and compare completed work, checks, token use and elapsed
 time before attributing any savings to this setup.
+
+Before enabling workers in an existing team, provision each worker's private
+Local VM through `POST /api/bots/:id/local-computer/run` and check its readiness.
+A `computer: "vm"` profile alone does not create its desktop. Stopped desktops
+still occupy per-bot capacity: an existing eight-desktop team needs capacity ten
+for two new workers. Settings accept up to twelve; the default remains two.
+Use the existing image and workspace identity provisioning, and preserve the
+operator's existing desktops and active tasks. Do not mark setup complete from
+fake-provider workflow tests alone.
+
+The working-environment profile guidance distinguishes Claude's MCP-qualified
+names from other engines' names and makes per-bot file ownership explicit.
+`working-environment.e2e.test.ts` verifies that applying it preserves an active
+turn and access settings, and that the next turn receives the new guidance.

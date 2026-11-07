@@ -4,7 +4,7 @@ import type { AppConfig } from "./config.ts";
 export const DEFAULT_LOCAL_VM_MODE = "shared" as const;
 export const DEFAULT_LOCAL_VM_MAX_INSTANCES = 2;
 export const MIN_LOCAL_VM_MAX_INSTANCES = 1;
-export const MAX_LOCAL_VM_MAX_INSTANCES = 8;
+export const MAX_LOCAL_VM_MAX_INSTANCES = 12;
 export const DEFAULT_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 480;
 export const MIN_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 5;
 export const MAX_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 1_440;
