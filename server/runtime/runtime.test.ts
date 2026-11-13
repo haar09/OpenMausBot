@@ -222,26 +222,23 @@ describe("Runtime: one tree, one lane", () => {
     invariants(w);
   });
 
-  it("does not reassign a budget-stopped teammate after a restart, even from another branch", async () => {
-    const w = world(() => "hold");
+  it("allows explicit same-root rework after a budget failure when progress renews the budget", async () => {
+    const w = world(undefined, { executions: 2 });
     const root = w.runtime.begin(beginReq());
-    const a = ok(w.runtime.enqueue(toBot("builder-a", root.id)));
-    const b = ok(w.runtime.enqueue(toBot("builder-b", root.id)));
+    ok(w.runtime.enqueue(toBot("builder-a", root.id)));
+    const failed = ok(w.runtime.enqueue(toBot("builder-b", root.id)));
     w.runtime.tick();
-    w.runtime.stopRequester({ threadId: "builder-a-work" }, "Execution budget exhausted", "budget");
-    expect(w.store.get(a.id)).toMatchObject({ status: "failed", outcome: "budget" });
-    expect(w.runtime.enqueue(toBot("builder-a", b.id, "Try a different part", { rework: true })))
-      .toMatchObject({ ok: false, outcome: "budget", reason: /already reached a budget limit/ });
-    w.runtime.end(root.id, { ok: true, text: "Waiting" });
-    w.runtime.close();
-    const next = world(() => "hold", w.limits, w.store);
-    next.runtime.tick();
-    expect(next.store.get(b.id)?.status).toBe("running");
-    expect(next.runtime.enqueue(toBot("builder-a", b.id, "Try a new thread", {
-      rework: true, assignee: { botId: "builder-a", destination: { kind: "work_thread", threadId: "another-thread" } },
-    }))).toMatchObject({ ok: false, outcome: "budget" });
-    expect(next.store.all({ rootId: root.id })).toHaveLength(3);
-    invariants(next);
+    expect(w.store.get(failed.id)).toMatchObject({ status: "failed", outcome: "budget" });
+    await flush();
+    expect(w.runtime.enqueue(toBot("builder-b", root.id))).toMatchObject({ ok: true, duplicate: true, assignment: { id: failed.id } });
+    const retry = ok(w.runtime.enqueue(toBot("builder-b", root.id, undefined, { rework: true })));
+    expect(retry.id).not.toBe(failed.id);
+    expect(retry.rootId).toBe(root.id);
+    w.runtime.tick();
+    await flush();
+    expect(w.store.get(retry.id)).toMatchObject({ status: "completed", outcome: "done" });
+    expect(w.store.get(failed.id)).toMatchObject({ status: "failed", outcome: "budget" });
+    invariants(w);
   });
 
   it("expires a queue entry that never started and a question nobody answered, never as completed", async () => {

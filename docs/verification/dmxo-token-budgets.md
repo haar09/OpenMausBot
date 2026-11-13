@@ -7,10 +7,10 @@ been removed from the implementation and configuration schema.
 The production loop guard remains `{ "enabled": true, "correctiveRounds": 2 }`.
 Upstream's runtime and provider limits still apply.
 
-A custom reassignment rule remains: a teammate with a recorded budget failure
-cannot receive another assignment under the same root request, including rework
-from another branch after a restart. Completed work is preserved. A fresh user
-request can assign that teammate again.
+Reassignment and stop handling follow upstream. A recorded budget failure does
+not ban a teammate from the rest of the root request. Explicit rework can retry
+a terminal assignment when upstream's current progress budgets allow it.
+Duplicate-dispatch, ancestor-cycle and user-stop protections remain.
 
 Communication profiles use the existing runtime protocol:
 
