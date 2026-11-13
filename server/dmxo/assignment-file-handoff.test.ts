@@ -109,5 +109,5 @@ it("delivers files above the former 25 MB limit through both handoff checks", as
   f.saved.bytes = body.length;
   expect(await handoffAttachedFile(f.saved, f.deps)).toHaveProperty("requesterCopy.bytes", body.length);
   expect(write(root, { body, hash }).status).toBe(0);
-  expect(readFileSync(join(root, ".openmausbot-incoming", "assignment", "artifact.txt"))).toEqual(body);
+  expect(readFileSync(join(root, ".openmausbot-incoming", "assignment", "artifact.txt")).equals(body)).toBe(true);
 });
