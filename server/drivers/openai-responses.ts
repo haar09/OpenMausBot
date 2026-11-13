@@ -31,27 +31,18 @@ export function isOpenAIAddress(apiUrl: string): boolean {
   return own && url.protocol === "https:" && url.pathname.replace(/\/+$/, "") === "/v1";
 }
 
-export function isAzureOpenAIAddress(apiUrl: string): boolean {
-  let url: URL;
-  try { url = new URL(apiUrl); } catch { return false; }
-  return url.protocol === "https:" && url.pathname.replace(/\/+$/, "") === "/openai/v1" &&
-    (url.hostname.endsWith(".openai.azure.com") || url.hostname.endsWith(".services.ai.azure.com"));
-}
-
 /** Each model only moves forward (chat, responses, chat-reasoning-off), so a resend can never loop. A call without tools
  * never meets the refusal and stays on Chat Completions. */
 export function createModelRoutes(apiUrl: string) {
-  const azure = isAzureOpenAIAddress(apiUrl);
-  const servesResponses = isOpenAIAddress(apiUrl) || azure;
+  const servesResponses = isOpenAIAddress(apiUrl);
   const routes = new Map<string, ModelRoute>();
   const noSummaries = new Set<string>();
-  const routeFor = (model: string): ModelRoute => routes.get(model) ?? (azure && /^gpt-6(?:[.-]|$)/i.test(model) ? "responses" : "chat");
   return {
-    routeFor: (model: string, hasTools: boolean): ModelRoute => hasTools ? routeFor(model) : "chat",
+    routeFor: (model: string, hasTools: boolean): ModelRoute => hasTools ? routes.get(model) ?? "chat" : "chat",
     summaries: (model: string) => !noSummaries.has(model),
     /** False when the model has nothing left to try. */
     advance(model: string, refusal: RouteRefusal): boolean {
-      const route = routeFor(model);
+      const route = routes.get(model) ?? "chat";
       if (refusal === "summaries-refused") {
         if (noSummaries.has(model)) return false;
         noSummaries.add(model);
@@ -132,7 +123,6 @@ export function responsesRequest(input: {
     model: input.model,
     stream: true,
     store: false,
-    include: ["reasoning.encrypted_content"],
     ...(instructions ? { instructions } : {}),
     input: input.messages.flatMap((message) => inputItems(message, input.replay(message))),
     ...(input.summaries || typeof input.effort === "string" ? { reasoning: {
@@ -203,14 +193,7 @@ export async function readResponsesStream(body: ReadableStream<Uint8Array> | nul
       for (const [position, item] of response.output.entries()) if (object(item)) finishItem(item as ResponseItem, position);
     }
     const used = object(response?.usage);
-    if (used) {
-      const cachedInput = object(used.input_tokens_details)?.cached_tokens;
-      usage = {
-        input: Number(used.input_tokens) || 0,
-        output: Number(used.output_tokens) || 0,
-        ...(typeof cachedInput === "number" && Number.isFinite(cachedInput) && cachedInput >= 0 ? { cachedInput } : {}),
-      };
-    }
+    if (used) usage = { input: Number(used.input_tokens) || 0, output: Number(used.output_tokens) || 0 };
   };
   const failure = (error: Record<string, unknown> | undefined) => {
     const code = typeof error?.code === "string" ? error.code : "";

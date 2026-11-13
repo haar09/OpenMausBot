@@ -36,5 +36,4 @@ turns complete. They use real API/MCP/runtime paths with fake model providers.
 They do not prove that a real model always follows its profile or quantify savings.
 
 Monitoring still uses a model and keeps incomplete source reads visible. It is
-not a deterministic model-free collector. Cache accounting retains known cached
-input without inventing missing usage or prices.
+not a deterministic model-free collector. API accounting follows upstream drivers.
