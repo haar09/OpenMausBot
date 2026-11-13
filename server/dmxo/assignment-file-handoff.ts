@@ -4,14 +4,15 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename } from "node:path";
 
+import { FILE_MAX_BYTES } from "../../shared/upload-limits.ts";
 import type { SavedBotAttachment } from "../bot-attachment.ts";
 import { containerRuntimeStatus, localVmWorkspaceExists, perBotLocalVmTarget, VM_WORKSPACE_GUEST, type LocalVmTarget } from "../container-computer.ts";
 import type { HandoffView } from "../coordinator.ts";
 
 export const INCOMING_FILE_SCRIPT = `import os,sys,hashlib,json
 root,assignment,name,expected=sys.argv[1:]
-data=sys.stdin.buffer.read(25*1024*1024+1)
-if len(data)>25*1024*1024 or hashlib.sha256(data).hexdigest()!=expected: raise ValueError('Artifact checksum or size mismatch')
+data=sys.stdin.buffer.read(${FILE_MAX_BYTES}+1)
+if len(data)>${FILE_MAX_BYTES} or hashlib.sha256(data).hexdigest()!=expected: raise ValueError('Artifact checksum or size mismatch')
 if any('/' in part or part in ('','..','.') for part in [assignment,name]): raise ValueError('Invalid artifact name')
 fd=os.open(root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
 try:
@@ -82,7 +83,7 @@ export async function handoffAttachedFile(saved: SavedBotAttachment, deps: FileH
   let data: Buffer;
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.size !== saved.bytes || stat.size > 25 * 1024 * 1024) throw new Error("Attachment changed before delivery");
+    if (!stat.isFile() || stat.size !== saved.bytes || stat.size > FILE_MAX_BYTES) throw new Error("Attachment changed before delivery");
     data = await file.readFile();
   } finally { await file.close(); }
   const attachmentId = basename(saved.attachment.path);

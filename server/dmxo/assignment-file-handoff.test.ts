@@ -100,3 +100,14 @@ it("the real VM writer rejects traversal, incorrect checksums and symlinked inbo
   expect(write(safe).status).not.toBe(0);
   expect(readFileSync(protectedFile, "utf8")).toBe("unchanged");
 });
+
+it("delivers files above the former 25 MB limit through both handoff checks", async () => {
+  const f = fixture(), root = directory();
+  const body = Buffer.alloc(26 * 1024 * 1024, 97);
+  const hash = createHash("sha256").update(body).digest("hex");
+  writeFileSync(f.saved.attachment.path, body);
+  f.saved.bytes = body.length;
+  expect(await handoffAttachedFile(f.saved, f.deps)).toHaveProperty("requesterCopy.bytes", body.length);
+  expect(write(root, { body, hash }).status).toBe(0);
+  expect(readFileSync(join(root, ".openmausbot-incoming", "assignment", "artifact.txt"))).toEqual(body);
+});

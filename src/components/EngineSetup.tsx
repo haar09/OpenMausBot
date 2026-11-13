@@ -3,6 +3,7 @@ import { AlertTriangle, Check, Copy, Download, ExternalLink, KeyRound, Loader2, 
 import { api, type InstanceInfo, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { engineDisplayName } from "@/lib/engine-name";
 import { copyText } from "@/lib/copy-text";
 import { DEVICE_SIGN_IN_COPY, DeviceSignIn, deviceSignInProvider } from "./DeviceSignIn";
 import { ClaudeSignIn } from "./ClaudeSignIn";
@@ -14,6 +15,7 @@ export { installCommandFor };
 import { keyEntry, keyForInstance, type KeyId } from "./keys/key-catalog";
 import { openKeySettings } from "./keys/key-focus";
 import { KeyRow, SavedKeyLine } from "./keys/KeyRow";
+import { OllamaStatusLine } from "./OllamaStatusLine";
 
 export function needsSignIn(instance: InstanceInfo | undefined): boolean {
   return instance?.snapshot.state === "available" && instance.snapshot.authenticated === false;
@@ -30,6 +32,12 @@ export function needsCli(instance: InstanceInfo | undefined): boolean {
 
 export function serverTerminal(cloudHome: boolean): boolean {
   return Boolean(window.ogb?.openInstallTerminal) && window.ogb?.remoteClient?.active !== true && !cloudHome;
+}
+
+/** Google's redirect goes to 127.0.0.1 on the server, which the person's browser can't reach when the server is a Cloud or
+ * another computer: there the paste-the-redirect step is the only way to finish, so it starts open. */
+export function redirectPasteOpen(cloudHome: boolean): boolean {
+  return cloudHome || window.ogb?.remoteClient?.active === true;
 }
 
 export function grokKeyInstead(instance: InstanceInfo, cloudHome: boolean): boolean {
@@ -193,7 +201,7 @@ function ServerEngineInstall({ instance, mode, command, quiet = false }: { insta
         {busy ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
         {busy
           ? t("engineSetup.serverInstalling")
-          : t(mode === "update" ? "engineSetup.serverUpdate" : "engineSetup.serverInstall", { name: instance.displayName })}
+          : t(mode === "update" ? "engineSetup.serverUpdate" : "engineSetup.serverInstall", { name: engineDisplayName(instance) })}
       </button>
       {standalone && mode === "install" && !busy && !done && (
         <p className="text-center text-[11px] text-ink-tertiary">
@@ -269,7 +277,7 @@ export function EngineWarningNotice({
 }
 
 function ManagedEngineSetup({ instance, signInOnly }: { instance: InstanceInfo; signInOnly: boolean }) {
-  const { refreshInstances, refreshModels } = useStore();
+  const { state, refreshInstances, refreshModels } = useStore();
   const [busy, setBusy] = useState<"install" | "signin" | "complete" | "check" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [flow, setFlow] = useState<{ flowId: string; authorizationUrl: string } | null>(null);
@@ -368,7 +376,7 @@ function ManagedEngineSetup({ instance, signInOnly }: { instance: InstanceInfo; 
           <button type="button" onClick={() => void check()} className="w-full rounded-lg bg-control px-3 py-2 text-[12px] font-semibold text-ink hover:bg-raised-hover">
             {busy === "check" ? t("common.checking") : t("engineSetup.finishedSignIn")}
           </button>
-          <details className="rounded-lg border border-hairline/50 bg-app px-2.5 py-2 text-[12px] text-ink-secondary">
+          <details open={redirectPasteOpen(state.config?.cloudHome === true)} className="rounded-lg border border-hairline/50 bg-app px-2.5 py-2 text-[12px] text-ink-secondary">
             <summary className="cursor-pointer select-none">{t("engineSetup.otherComputer")}</summary>
             <p className="mt-2 leading-relaxed">{t("engineSetup.otherComputerHint")}</p>
             <input
@@ -400,11 +408,11 @@ export function isApiKeyEngine(instance: InstanceInfo | undefined): boolean {
 }
 
 export function hasSavedApiKey(instance: InstanceInfo): boolean {
-  return isApiKeyEngine(instance) && instance.snapshot.authenticated === true;
+  return isApiKeyEngine(instance) && instance.serverKind !== "ollama" && instance.snapshot.authenticated === true;
 }
 
 function apiKeySetup(instance: InstanceInfo): boolean {
-  if (!(isApiKeyEngine(instance) || instance.install?.settings === "connections") || instance.snapshot.authenticationUnavailableReason) return false;
+  if (!(isApiKeyEngine(instance) || instance.install?.settings === "connections") || instance.snapshot.authenticationUnavailableReason || instance.serverKind === "ollama") return false;
   // A key engine with its own CLI (DeepSeek Harness) is installed first, then given the key.
   if (instance.snapshot.state !== "available") return !installCommandFor(instance.install);
   return instance.snapshot.authenticated === false;
@@ -473,7 +481,7 @@ function ApiKeyEngineSetup({ instance, className, unframed, configured = false }
           <KeyRound size={14} />
         </span>
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold text-ink">{t(copy.title, { name: instance.displayName })}</div>
+          <div className="text-[13px] font-semibold text-ink">{t(copy.title, { name: engineDisplayName(instance) })}</div>
           {copy.description && <p className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{t(copy.description)}</p>}
         </div>
       </div>
@@ -493,6 +501,17 @@ function ApiKeyEngineSetup({ instance, className, unframed, configured = false }
         </button>
       )}
     </div>
+  );
+}
+
+function CheckEnginesAgain() {
+  const { refreshInstances } = useStore();
+  const [busy, setBusy] = useState(false);
+  return (
+    <button type="button" disabled={busy} className="ui-button" onClick={() => { setBusy(true); void refreshInstances().finally(() => setBusy(false)); }}>
+      {busy && <Loader2 size={12} className="animate-spin" aria-hidden="true" />}
+      {t("common.checkAgain")}
+    </button>
   );
 }
 
@@ -525,14 +544,18 @@ export function EngineSetup({
   const installCommand = installCommandFor(install);
   const signInCommand = install?.signInCommand;
   const signInOnly = intent === "cloud" && needsSignIn(instance);
+  /** On a Cloud, an engine the app can't install there and that isn't installed: nothing the person can run will. */
+  const cloudCantInstall = cloudHome && !signInOnly && needsCli(instance) && !install?.server && !install?.managed;
+  /** A Cloud's "not installed" reason only says to install it in a terminal or use Set CLI; the card says what to do instead. */
+  const cloudReasonHidden = cloudCantInstall || (cloudHome && !signInOnly && Boolean(install?.server) && instance.snapshot.notEngineCli !== true);
   const deviceSignIn = signInOnly && instance.authentication?.method === "device-code";
   const browserSignIn = signInOnly && instance.authentication?.method === "browser-pkce";
   const pasteSignIn = signInOnly && instance.authentication?.method === "paste-code";
   const provider = deviceSignInProvider(instance.driverKind);
   const command = signInOnly ? signInCommand : installCommand;
   const title = signInOnly
-    ? t("engineSetup.signInTitle", { name: instance.displayName })
-    : t("engineSetup.setupTitle", { name: instance.displayName });
+    ? t("engineSetup.signInTitle", { name: engineDisplayName(instance) })
+    : t("engineSetup.setupTitle", { name: engineDisplayName(instance) });
   const description = descriptionOverride ?? (signInOnly
     ? browserSignIn
       ? t("engineSetup.chatgpt.description")
@@ -571,13 +594,15 @@ export function EngineSetup({
     return <GrokKeyInstead className={className} unframed={unframed} />;
   }
 
-  if (!install || instance.snapshot.authenticationUnavailableReason) {
+  if (!install || instance.snapshot.authenticationUnavailableReason || instance.serverKind === "ollama") {
     return (
       <div className={cn(!unframed && "rounded-xl border border-hairline/40 bg-control/30 p-3", className)}>
-        <div className="text-[13px] font-semibold text-ink">{t("engineSetup.notReady", { name: instance.displayName })}</div>
-        <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary">
-          {instance.snapshot.authenticationUnavailableReason ?? instance.snapshot.reason ?? t("engineSetup.noReason")}
-        </p>
+        <div className="text-[13px] font-semibold text-ink">{t("engineSetup.notReady", { name: engineDisplayName(instance) })}</div>
+        {instance.snapshot.ollama
+          ? <div className="mt-1 flex flex-col items-start gap-2"><OllamaStatusLine status={instance.snapshot.ollama} /><CheckEnginesAgain /></div>
+          : <p className="mt-1 text-[12px] leading-relaxed text-ink-secondary">
+              {instance.snapshot.authenticationUnavailableReason ?? instance.snapshot.reason ?? t("engineSetup.noReason")}
+            </p>}
       </div>
     );
   }
@@ -599,7 +624,7 @@ export function EngineSetup({
         </div>
       </div>
 
-      {instance.snapshot.state === "unavailable" && instance.snapshot.reason && (quiet ? (
+      {instance.snapshot.state === "unavailable" && instance.snapshot.reason && !cloudReasonHidden && (quiet ? (
         <details data-engine-setup-reason className="mt-2 text-[12px] leading-4 text-ink-tertiary">
           <summary className="cursor-pointer select-none hover:text-ink-secondary">{t("engineSetup.details")}</summary>
           <p className="mt-1 whitespace-pre-wrap">{instance.snapshot.reason}</p>
@@ -626,6 +651,11 @@ export function EngineSetup({
         <ServerEngineInstall instance={instance} mode="install" command={installCommand} />
       ) : install.managed ? (
         <ManagedEngineSetup instance={instance} signInOnly={signInOnly} />
+      ) : cloudCantInstall ? (
+        // A Cloud has no terminal: a command to copy, or a path to set, only invites pasting it where it can't run.
+        <p data-cloud-cant-install className="mt-3 rounded-lg bg-inset px-2.5 py-2 text-[12px] leading-relaxed text-ink-secondary">
+          {t("engineSetup.cloudCantInstall", { name: instance.displayName })}
+        </p>
       ) : command ? (
         <CommandRow
           command={command}
@@ -650,13 +680,13 @@ export function EngineSetup({
 
       {(install.command || signInCommand) && !deviceSignIn && !browserSignIn && !pasteSignIn && !install.managed && (
         <div className="mt-3 border-t border-hairline/40 pt-2">
-          <p className="mb-1 text-[12px] leading-relaxed text-ink-secondary">{t("engineSetup.sameMachine")}</p>
-          {needsCli(instance) && <p className="mb-1 text-[12px] leading-relaxed text-ink-secondary">{t("engineSetup.pathHint")}</p>}
+          {!cloudHome && <p className="mb-1 text-[12px] leading-relaxed text-ink-secondary">{t("engineSetup.sameMachine")}</p>}
+          {!cloudHome && needsCli(instance) && <p className="mb-1 text-[12px] leading-relaxed text-ink-secondary">{t("engineSetup.pathHint")}</p>}
           <RefreshEngines key={instance.instanceId} />
         </div>
       )}
 
-      {install.docsUrl && (
+      {install.docsUrl && !cloudCantInstall && (
         <a
           href={install.docsUrl}
           target="_blank"

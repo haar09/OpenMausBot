@@ -1,5 +1,7 @@
+import { notificationTrayPinned } from "@/lib/notification-preferences";
 import type { Action, AppState } from "./store";
 import { openOwnTeamChat, teamChats } from "./team-chats";
+import { teamThreadToOpen } from "./team-side";
 
 interface NotificationThreadOwner {
   id: string;
@@ -35,12 +37,15 @@ export function awayFromMainThread(bot: Pick<NotificationThreadOwner, "threadId"
   return !threadsShown && botOpensTo(bot, false) !== bot.threadId;
 }
 
-/** On a team's Cloud, the person's own conversation with the bot, never the team's main chat (team-chats.ts). */
+/** On a team's Cloud, the bot's conversation on the side the sidebar shows: the person's own with it under "Just me", its
+ * shared chat under "Team". */
 export function openBot(
   dispatch: (action: Action) => void,
   bot: Pick<NotificationThreadOwner, "id" | "threadId" | "mainThreadId" | "tasks"> & { yourAccess?: string },
   threadsShown: boolean,
 ) {
+  const shared = teamThreadToOpen(bot, teamChats());
+  if (shared) return openBotThread(dispatch, bot, shared, threadsShown);
   if (openOwnTeamChat(dispatch, bot, (threadId) => openBotThread(dispatch, bot, threadId, threadsShown))) return;
   const opened = botOpensTo(bot, threadsShown);
   if (opened === bot.threadId) dispatch({ type: "select", id: bot.id });
@@ -127,4 +132,22 @@ export function openThread(
   if (group || owner) return true;
   dispatch({ type: "notice", notice: { kind: "thread-gone", botName: named?.name ?? null } });
   return false;
+}
+
+type NotificationTray = Pick<AppState, "notificationsOpen" | "notificationsPinned">;
+
+export function closeUnpinnedTray<T extends NotificationTray>(state: T): T {
+  return state.notificationsOpen && !state.notificationsPinned ? { ...state, notificationsOpen: false } : state;
+}
+
+/** Opening the chat already on screen is not leaving it. */
+export function closeTrayUnlessShown(state: AppState, id: string, threadId: string): AppState {
+  const chat = [...state.bots, ...state.groups].find((candidate) => candidate.id === id);
+  const shownThreadId = chat && "switchingTo" in chat ? chat.switchingTo ?? chat.threadId : chat?.threadId;
+  const shown = state.activeView === "chat" && id === state.selectedId && shownThreadId === threadId;
+  return shown ? state : closeUnpinnedTray(state);
+}
+
+export function withRememberedTrayPin<T extends NotificationTray>(state: T): T {
+  return notificationTrayPinned() ? { ...state, notificationsPinned: true } : state;
 }

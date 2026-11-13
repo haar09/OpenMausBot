@@ -1,22 +1,40 @@
-// A self-hosted server cannot replace itself, so this only says whether a newer release exists and how this install is updated.
+// A self-hosted server cannot replace itself, so this only says whether a newer version exists and how this install is updated.
 import { existsSync } from "node:fs";
 import { join, sep } from "node:path";
 
 export const LATEST_RELEASE_URL = "https://api.github.com/repos/milind-soni/OpenMausBot/releases/latest";
+/** Written by .github/workflows/promote-stable.yml: the released version our own Clouds have run for 48 hours. */
+export const STABLE_CHANNEL_URL = "https://raw.githubusercontent.com/milind-soni/OpenMausBot/channels/stable.json";
 export const RELEASE_HISTORY_URL = "https://api.github.com/repos/milind-soni/OpenMausBot/releases";
-const CACHE_MS = 60 * 60_000;
 const STABLE_TAG = /^v?\d+\.\d+\.\d+(?:\+[0-9A-Za-z.-]+)?$/;
+const CACHE_MS = 60 * 60_000;
+/** How long the last answer stands in when the channel cannot be read: an outage of GitHub is no reason to say nothing. */
+const STALE_MS = 24 * 60 * 60_000;
 
 /** "managed" is a hosted or Cloud server that is updated for its owner. */
 export type InstallKind = "desktop" | "managed" | "docker" | "podman" | "npm" | "git" | "unknown";
 
-/** As docs/self-hosting.md and deploy/podman/README.md give them. */
-export const UPDATE_COMMANDS: Partial<Record<InstallKind, { command: string; restart: boolean }>> = {
-  docker: { command: "docker compose pull omb && docker compose up -d", restart: false },
-  podman: { command: "git pull && cd deploy/podman && PODMAN_COMPOSE_PROVIDER=podman-compose podman compose --env-file .env -f compose.yaml up -d --build", restart: false },
-  npm: { command: "npm install -g openmausbot@latest", restart: true },
-  git: { command: "git pull && pnpm install", restart: true },
-};
+/** `stable` follows the promoted version; `newest` follows every release, as soon as it is published. */
+export type UpdateChannel = "stable" | "newest";
+
+/** OMB_UPDATE_CHANNEL: `newest` to hear of every release; anything else is `stable`. */
+export function updateChannel(env: NodeJS.ProcessEnv = process.env): UpdateChannel {
+  return env.OMB_UPDATE_CHANNEL?.trim().toLowerCase() === "newest" ? "newest" : "stable";
+}
+
+/**
+ * As docs/self-hosting.md and deploy/podman/README.md give them. `version` is the one the channel names: an npm install
+ * is pinned to it, and a Docker install passes it to deploy/update.sh unless that is the stable one update.sh takes anyway.
+ */
+export function updateCommand(install: InstallKind, target?: { version: string; stable: boolean }): { command: string; restart: boolean } | undefined {
+  switch (install) {
+    case "docker": return { command: target && !target.stable ? `git pull && ./update.sh --version ${target.version}` : "git pull && ./update.sh", restart: false };
+    case "podman": return { command: "git pull && cd deploy/podman && PODMAN_COMPOSE_PROVIDER=podman-compose podman compose --env-file .env -f compose.yaml up -d --build", restart: false };
+    case "npm": return { command: `npm install -g openmausbot@${target?.version ?? "latest"}`, restart: true };
+    case "git": return { command: "git pull && pnpm install", restart: true };
+    default: return undefined;
+  }
+}
 
 export function installKind(input: {
   desktopManaged: boolean;
@@ -64,6 +82,8 @@ export function isNewerVersion(latest: string, current: string): boolean {
 export interface UpdateCheck {
   current: string;
   install: InstallKind;
+  /** Where `latest` came from. `stable` falls back to `newest` until a first version has been promoted. */
+  channel?: UpdateChannel;
   latest?: string;
   available: boolean;
   releaseUrl?: string;
@@ -76,86 +96,83 @@ export interface UpdateCheck {
   historyUnavailable?: boolean;
 }
 
-/** A cached stable-release check shared by all callers; bounded history counts published releases, not version-number differences. */
+type Found = { version: string; releaseUrl?: string };
+
+/** One cached lookup an hour, shared by every caller. */
 export function createUpdateChecker(options: {
   current: string;
   install: InstallKind;
+  channel?: UpdateChannel;
   fetch?: typeof fetch;
   now?: () => number;
 }) {
-  const fetchRelease = options.fetch ?? fetch;
+  const fetchJson = options.fetch ?? fetch;
   const now = options.now ?? Date.now;
-  let cached: { until: number; result: UpdateCheck } | undefined;
-  let failed: { until: number; error: Error } | undefined;
+  const channel = options.channel ?? "stable";
+  let cached: { at: number; result: UpdateCheck } | undefined;
+  /** The last answer that was read, kept past the hour for a channel that cannot be read for a while. */
+  let lastGood: { at: number; result: UpdateCheck } | undefined;
+  let failed: { at: number; error: Error } | undefined;
   let inflight: Promise<UpdateCheck> | undefined;
   const base = (): UpdateCheck => ({
     current: options.current,
     install: options.install,
     available: false,
-    ...UPDATE_COMMANDS[options.install],
+    ...updateCommand(options.install),
   });
+  const ask = (url: string) => fetchJson(url, {
+    headers: { accept: "application/vnd.github+json", "user-agent": "openmausbot-update-check" },
+    signal: AbortSignal.timeout(8_000),
+  });
+
+  /** Null until a first version has been promoted: the record does not exist yet. */
+  async function stable(): Promise<Found | null> {
+    const response = await ask(STABLE_CHANNEL_URL);
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`The stable channel answered ${response.status}`);
+    const record = await response.json() as { version?: unknown; releaseUrl?: unknown };
+    if (typeof record.version !== "string" || !/^\d+\.\d+\.\d+$/.test(record.version)) throw new Error("The stable channel named no version");
+    return { version: record.version, ...(typeof record.releaseUrl === "string" ? { releaseUrl: record.releaseUrl } : {}) };
+  }
+
+  async function newest(): Promise<Found> {
+    const response = await ask(LATEST_RELEASE_URL);
+    if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
+    const release = await response.json() as { tag_name?: unknown; html_url?: unknown };
+    if (typeof release.tag_name !== "string" || !STABLE_TAG.test(release.tag_name)) throw new Error("GitHub sent no stable release tag");
+    return { version: release.tag_name.replace(/^v/, ""), releaseUrl: `https://github.com/milind-soni/OpenMausBot/releases/tag/${encodeURIComponent(release.tag_name)}` };
+  }
 
   return async function check(): Promise<UpdateCheck> {
     if (options.install === "desktop" || options.install === "managed") return base();
-    if (cached && now() < cached.until) return cached.result;
-    if (failed && now() < failed.until) {
-      if (cached) return { ...cached.result, stale: true };
+    if (cached && now() - cached.at < CACHE_MS) return cached.result;
+    if (failed && now() - failed.at < 60_000) {
+      if (lastGood && now() - lastGood.at < STALE_MS) return { ...lastGood.result, stale: true };
       throw failed.error;
     }
     inflight ??= (async () => {
       try {
-        const request = {
-          headers: { accept: "application/vnd.github+json", "user-agent": "openmausbot-update-check" },
-          signal: AbortSignal.timeout(8_000),
-        };
-        const response = await fetchRelease(LATEST_RELEASE_URL, request);
-        if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
-        const release = await response.json() as { tag_name?: unknown; draft?: boolean; prerelease?: boolean };
-        if (typeof release.tag_name !== "string" || !STABLE_TAG.test(release.tag_name) || release.draft || release.prerelease) throw new Error("GitHub sent no stable release tag");
+        const promoted = channel === "stable" ? await stable() : null;
+        const found = promoted ?? await newest();
         if (!/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(options.current)) throw new Error("Installed version cannot be compared");
-        const latest = release.tag_name.replace(/^v/, "");
         const result: UpdateCheck = {
           ...base(),
-          latest,
-          available: isNewerVersion(latest, options.current),
-          releaseUrl: `https://github.com/milind-soni/OpenMausBot/releases/tag/${encodeURIComponent(release.tag_name)}`,
+          channel: promoted ? "stable" : "newest",
+          latest: found.version,
           checkedAt: new Date(now()).toISOString(),
+          available: isNewerVersion(found.version, options.current),
+          ...(found.releaseUrl ? { releaseUrl: found.releaseUrl } : {}),
+          ...updateCommand(options.install, { version: found.version, stable: promoted !== null }),
         };
-        if (!result.available) {
-          result.behind = 0;
-          result.behindExact = true;
-        } else {
-          const versions = new Set<string>();
-          try {
-            for (let page = 1; page <= 5; page++) {
-              const history = await fetchRelease(`${RELEASE_HISTORY_URL}?per_page=100&page=${page}`, request);
-              if (!history.ok) throw new Error(`GitHub history answered ${history.status}`);
-              const rows: unknown = await history.json();
-              if (!Array.isArray(rows)) throw new Error("GitHub sent no release history");
-              for (const row of rows) {
-                if (!row || typeof row !== "object" || typeof row.tag_name !== "string" || row.draft || row.prerelease || !STABLE_TAG.test(row.tag_name)) continue;
-                const version = row.tag_name.replace(/^v/, "").split("+")[0]!;
-                if (isNewerVersion(version, options.current) && !isNewerVersion(version, latest)) versions.add(version);
-              }
-              if (rows.length < 100) {
-                result.behindExact = true;
-                break;
-              }
-            }
-            versions.add(latest.split("+")[0]!);
-            result.behind = versions.size;
-            result.behindExact ??= false;
-          } catch {
-            result.historyUnavailable = true;
-          }
-        }
+        Object.assign(result, await releaseDistance(ask, options.current, found.version));
         failed = undefined;
-        cached = { until: now() + (result.historyUnavailable ? 5 * 60_000 : CACHE_MS), result };
+        cached = lastGood = { at: now(), result };
         return result;
-      } catch (cause) {
-        const error = cause instanceof Error ? cause : new Error(String(cause));
-        failed = { until: now() + 60_000, error };
-        if (cached) return { ...cached.result, stale: true };
+      } catch (error) {
+        // Never a fall back to the newest release, which the stable channel has not taken yet: the last answer it gave,
+        // when there is one from the last day, else the error.
+        failed = { at: now(), error: error instanceof Error ? error : new Error(String(error)) };
+        if (lastGood && now() - lastGood.at < STALE_MS) return { ...lastGood.result, stale: true };
         throw error;
       } finally {
         inflight = undefined;
@@ -163,4 +180,28 @@ export function createUpdateChecker(options: {
     })();
     return inflight;
   };
+}
+
+async function releaseDistance(ask: (url: string) => Promise<Response>, current: string, latest: string): Promise<Pick<UpdateCheck, "behind" | "behindExact" | "historyUnavailable">> {
+  if (!isNewerVersion(latest, current)) return { behind: 0, behindExact: true };
+  const versions = new Set<string>();
+  try {
+    let exact = false;
+    for (let page = 1; page <= 5; page++) {
+      const response = await ask(`${RELEASE_HISTORY_URL}?per_page=100&page=${page}`);
+      if (!response.ok) throw new Error(`GitHub history answered ${response.status}`);
+      const rows: unknown = await response.json();
+      if (!Array.isArray(rows)) throw new Error("GitHub sent no release history");
+      for (const row of rows) {
+        if (!row || typeof row !== "object" || typeof row.tag_name !== "string" || row.draft || row.prerelease || !STABLE_TAG.test(row.tag_name)) continue;
+        const version = row.tag_name.replace(/^v/, "").split("+")[0]!;
+        if (isNewerVersion(version, current) && !isNewerVersion(version, latest)) versions.add(version);
+      }
+      if (rows.length < 100) { exact = true; break; }
+    }
+    versions.add(latest.split("+")[0]!);
+    return { behind: versions.size, behindExact: exact };
+  } catch {
+    return { historyUnavailable: true };
+  }
 }

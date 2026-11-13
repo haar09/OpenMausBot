@@ -13,9 +13,12 @@ import { buildNotification, type Notification } from "../notify.ts";
 import { redactSecretsInText } from "../redact.ts";
 import { serverLine } from "../server-lines.ts";
 import type { Message, Store } from "../store.ts";
+import { turnWaitedOnPerson } from "../waiting-on-person.ts";
 import { workspaceDir } from "../workspace.ts";
 
 const TOOL = "lending_lift";
+/** The request of a card for a whole bot's memory, which no line of a conversation asked for. */
+const WHOLE_BOT = "whole-bot-memory";
 /** A card shows what it allows; past this it says where the rest is. */
 const SHOWN_CHARS = 2_000;
 const CARRY_ON_EVERY_MS = 5_000;
@@ -131,10 +134,11 @@ export function createLendingLifts(deps: LendingLiftDeps) {
         }
         return "open";
       }
-      if (last?.card?.answered === "deny") return "declined";
+      // A line's Not now holds for that line; a bot's holds until its memory changes again.
+      if (last?.card?.answered === "deny" && (requestMessageId !== WHOLE_BOT || last.card.lendingLift?.memoryToken === lift.memoryToken)) return "declined";
       const language = deps.language(threadId);
       const room = store.groupByThread(threadId);
-      const title = serverLine(language, "server.lendingLift.title", { bot: bot?.name ?? "", device: deps.device() });
+      const title = serverLine(language, requestMessageId === WHOLE_BOT ? "server.lendingLift.wholeBotTitle" : "server.lendingLift.title", { bot: bot?.name ?? "", device: deps.device() });
       const requestId = `lending-lift-${randomUUID()}`;
       store.appendMessage(threadId, {
         role: "bot", kind: "options",
@@ -145,6 +149,14 @@ export function createLendingLifts(deps: LendingLiftDeps) {
       if (store.projectBotForTask(botId, threadId)?.busy) store.setTaskActivity(botId, threadId, "waiting-on-you");
       if (bot) deps.notify(buildNotification("approval", bot, threadId, title));
       return "open";
+    },
+
+    /** Security invariant: a bot's memory just became locked. The card goes to its own main chat, for the owner alone to
+     * answer from one of their devices, and shows exactly what it would allow, like any other. */
+    memoryLocked(botId: string): void {
+      const bot = store.bot(botId);
+      if (!bot?.threadId) return;
+      this.raise({ botId, threadId: bot.threadId, requestMessageId: WHOLE_BOT, memoryChanged: true, outside: false });
     },
 
     /** They said Not now to this line of theirs. */
@@ -167,8 +179,8 @@ export function createLendingLifts(deps: LendingLiftDeps) {
       const card = message?.card, lift = card?.lendingLift;
       if (!message || !card || !lift) return null;
       if (!open(card)) return { status: 200, body: { ok: true, outcome: card.answered === "allow" ? "allowed-once" : card.answered === "deny" ? "rejected" : "unavailable", alreadySettled: true } };
-      if (behavior !== "allow" && behavior !== "deny") return { status: 400, body: { error: "Choose Allow or Not now." } };
-      if (!deps.ownersAnswer(card)) return { status: 403, body: { error: "Only you can allow this, from one of your own devices." } };
+      if (behavior !== "allow" && behavior !== "deny") return { status: 400, body: { error: serverLine(deps.language(threadId), "server.lendingLift.chooseAnswer") } };
+      if (!deps.ownersAnswer(card)) return { status: 403, body: { error: serverLine(deps.language(threadId), "server.lendingLift.ownerDeviceOnly") } };
       const botId = message.from?.botId ?? store.botByThread(threadId)?.id ?? "";
       const bot = store.bot(botId);
       const allowed = behavior === "allow";
@@ -181,7 +193,7 @@ export function createLendingLifts(deps: LendingLiftDeps) {
       // When they allowed it: work handed in after this shuts it again.
       store.patchMessage(threadId, message.id, { card: { ...card, answered: allowed ? "allow" : "deny", ...(allowed ? { lendingLift: { ...lift, allowedAt: now() } } : {}) } });
       deps.decide({ threadId, requestId, botId, botName: bot?.name, tool: TOOL, summary: card.title, decision: allowed ? "user-approved" : "user-denied", source: "user" });
-      if (store.projectBotForTask(botId, threadId)?.activity === "waiting-on-you") store.setTaskActivity(botId, threadId, "working");
+      if (turnWaitedOnPerson(store.taskByThread(botId, threadId))) store.setTaskActivity(botId, threadId, "working");
       if (allowed && store.groupByThread(threadId)) {
         store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name: serverLine(deps.language(threadId), "server.lendingLift.askAgain"), ok: true } });
       } else if (allowed) carryOn(botId, threadId, lift.requestMessageId, now());

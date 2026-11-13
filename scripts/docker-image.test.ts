@@ -40,7 +40,7 @@ function chain(target: string): Step[] {
   if (!stage) throw new Error(`the Dockerfile has no ${target} stage`);
   return [...(all.some(s => s.name === stage.from) ? chain(stage.from) : []), ...stage.steps];
 }
-const shipped = () => all.filter(s => s.name !== "build" && s.name !== "edge").flatMap(s => s.steps);
+const shipped = () => all.filter(s => s.name !== "build" && s.name !== "edge" && s.name !== "tunnel").flatMap(s => s.steps);
 const npmInstall = (step: Step) => step.op === "RUN" && /\bnpm install\b/.test(step.args);
 const browserRun = () => chain("runtime").find(step => step.op === "RUN" && step.args.includes("agent-browser install"))!;
 const grokRun = (steps: Step[]) => steps.findIndex(step => step.op === "RUN" && step.args.includes("https://x.ai/cli/install.sh"));
@@ -65,7 +65,7 @@ describe("container images", () => {
     for (const target of ["server", "cloud-home"]) {
       const steps = chain(target);
       const heavy = steps.flatMap((step, i) => (npmInstall(step) ? [i] : []));
-      const app = steps.flatMap((step, i) => (step.op === "COPY" && !step.args.includes("--from=edge") ? [i] : []));
+      const app = steps.flatMap((step, i) => (step.op === "COPY" && !/--from=(?:edge|tunnel) /.test(step.args) ? [i] : []));
       // agent-browser + Chrome, then (Cloud home only) pnpm in the tools layer, then the engines, then the app files
       // (and the Cloud home's Caddyfile)
       expect(heavy, target).toHaveLength(target === "cloud-home" ? 3 : 2);
@@ -106,6 +106,12 @@ describe("container images", () => {
     // pinned, so beneath the engines: an engine release does not re-pull it
     expect(home.findIndex(step => step.args.startsWith("--from=edge "))).toBeLessThan(home.findLastIndex(npmInstall));
     expect(home.filter(step => step.op === "RUN" && /\b(cp|mv)\b[^&]*caddy/.test(step.args))).toEqual([]);
+    // The tunnel's connector: the release scripts/prepare-cloudflared.mjs pins and checks, once, beneath the engines.
+    expect(all.find(s => s.name === "tunnel")!.steps.find(step => step.op === "RUN")!.args).toMatch(/^node \/stage\/prepare-cloudflared\.mjs --current --root \/stage /);
+    expect(home.filter(step => step.args.includes("/usr/local/bin/cloudflared") && step.op === "COPY")).toEqual([
+      { op: "COPY", args: "--from=tunnel /cloudflared /usr/local/bin/cloudflared" },
+    ]);
+    expect(home.findIndex(step => step.args.startsWith("--from=tunnel "))).toBeLessThan(home.findLastIndex(npmInstall));
     expect(home.filter(step => step.args.includes("--from=build")).map(step => step.args)).toEqual([
       "/src/dist-native/duckdb/target ./duckdb", "/src/dist-server ./dist-server", "/src/dist ./dist", "/src/skills ./skills",
     ].map(path => `--from=build ${path}`));
@@ -323,6 +329,28 @@ describe("container images", () => {
       const service = parse(readFileSync(new URL(file, import.meta.url), "utf8")).services.omb;
       expect(service.init, file).toBe(true);
       expect(service.shm_size, file).toBe("512m");
+    }
+  });
+
+  // Caddy in the server's network (network_mode: service:omb) stayed in the old, dead one whenever the server's
+  // container restarted alone, and HTTPS was refused while both looked healthy. It reaches the server over sockets in
+  // a volume both mount instead, and the Caddyfile names the paths the server listens on.
+  it("runs Caddy in its own container, reaching the server's sockets, never in the server's network", () => {
+    for (const [file, caddyfile] of [["../compose.yaml", "../deploy/local/Caddyfile"], ["../deploy/docker-compose.yml", "../deploy/Caddyfile"]]) {
+      const { services, volumes } = parse(readFileSync(new URL(file, import.meta.url), "utf8"));
+      expect(services.caddy.network_mode, file).toBeUndefined();
+      // `OMB_PHONE_RELAY=1` in .env reaches the server, never Caddy.
+      expect(Object.keys(services.omb.environment), file).toContain("OMB_PHONE_RELAY");
+      expect(Object.keys(services.caddy.environment ?? {}), file).not.toContain("OMB_PHONE_RELAY");
+      expect(services.omb.ports, file).toBeUndefined();
+      expect(services.caddy.ports.length, file).toBeGreaterThan(0);
+      expect(services.omb.volumes, file).toContain("edge:/run/openmausbot");
+      expect(services.caddy.volumes, file).toContain("edge:/run/openmausbot");
+      expect(volumes.edge.driver_opts.type, file).toBe("tmpfs");
+      const { OMB_TUNNEL_SOCKET: api, OMB_WEBHOOK_SOCKET: hooks } = services.omb.environment;
+      expect([api, hooks], file).toEqual(["/run/openmausbot/http.sock", "/run/openmausbot/hooks.sock"]);
+      const proxied = [...readFileSync(new URL(caddyfile, import.meta.url), "utf8").matchAll(/reverse_proxy (\S+)/g)].map((m) => m[1]);
+      expect(proxied, caddyfile).toEqual([`unix/${hooks}`, `unix/${api}`]);
     }
   });
 });

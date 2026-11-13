@@ -1,3 +1,4 @@
+import { userErrorThrown } from "../user-errors.ts";
 // A Team Cloud's people as people a bot can name. Whatever is addressed to a teammate reaches their inbox
 // (person-inbox.ts): a tag of @Bob anywhere a teammate writes it, or in a bot's reply where Bob can see it, and
 // message_person ("tell Bob that…"), which passes one message, whose answer comes back to the conversation that asked.
@@ -66,7 +67,7 @@ export interface TeamMessagesDeps {
   /** The inbox of a place that is no team's. */
   place?: PlaceInbox | null;
   /** What the inbox needs from the server: whose asks are whose, hand-offs, a bot carrying on, the assistant's reads. */
-  inbox: Pick<PersonInboxDeps, "askedPerson" | "handedFrom" | "continueTurn"> & Partial<Pick<PersonInboxDeps, "notes" | "ensureOwnBot" | "changed">> & {
+  inbox: Pick<PersonInboxDeps, "askedPerson" | "handedFrom" | "continueTurn"> & Partial<Pick<PersonInboxDeps, "notes" | "ensureOwnBot" | "changed" | "delivered">> & {
     representative?: Omit<RepresentativeDeps, "timeZone"> & Partial<Pick<RepresentativeDeps, "timeZone">>;
   };
   now?: () => number;
@@ -364,7 +365,7 @@ export function createTeamMessages(deps: TeamMessagesDeps) {
       const repeated = store.messagesFor(threadId).some((message) => message.sendId === line.sendId);
       const passed = replyIn(auth, threadId, messageId, emoji, { ...line, reaction: emoji });
       if (!passed) return null;
-      if (passed.status >= 400) return Promise.reject(Object.assign(new Error(passed.error ?? "That answer can't be passed back."), { status: passed.status }));
+      if (passed.status >= 400) return Promise.reject(Object.assign(passed.error ? new Error(passed.error) : userErrorThrown("serverError.inbox.answerNotPassed"), { status: passed.status }));
       return Promise.resolve(repeated ? { queued: false, repeated: true } : { queued: false });
     },
     /** The viewer's inbox as its panel lists it; null for someone on a team without one. */
@@ -418,8 +419,12 @@ export function createTeamMessages(deps: TeamMessagesDeps) {
       return waiting ? { returned: false, open: { botId: waiting.botId, threadId: waiting.threadId } } : { returned: false };
     },
     /** A notification about to go out: an ask, a failure or a routine's report routed to a person reaches their inbox. */
-    route(notification: Notification, how: { routine?: boolean } = {}): Notification | null {
+    route(notification: Notification, how: { routine?: boolean; summary?: boolean } = {}): Notification | null {
       return !team && deps.place ? deps.place.route(notification, how) : inbox.route(notification, how);
+    },
+    /** Work handed on finished: on a place that is no team's, a line in the inbox (place-inbox.ts). */
+    handedResult(work: { botId: string; threadId: string; groupId?: string; text: string }, requester: { botId: string; threadId: string }): void {
+      if (!team) deps.place?.handedResult(work, requester);
     },
     stop(): void {
       unsubscribe();

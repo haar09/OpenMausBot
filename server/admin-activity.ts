@@ -224,7 +224,7 @@ export function configChangeRows(before: unknown, after: unknown): Array<Omit<Ad
 
 /** What a bot may do, where, and who may see it; display fields (colour, unread, pins) are not audited. */
 export const BOT_AUDIT_FIELDS = [
-  "approvalMode", "autoApprove", "alwaysAllow", "peers", "approvePeerComms", "computer", "cloudBackend", "autoStartVps", "vpsAlias",
+  "approvalMode", "autoApprove", "alwaysAllow", "computer", "cloudBackend", "autoStartVps", "vpsAlias",
   "cwd", "composio", "browser", "browserProfile", "mcpServers", "chiefOfStaff", "managedSections", "section",
   "parkDirectMessages", "hidden", "modelSelection", "helperModel", "visibility",
 ] as const;
@@ -363,6 +363,8 @@ export type ActivityEntry =
       bot?: string;
       tool?: string;
       summary?: string;
+      summaryCode?: string;
+      summaryParams?: DecisionRow["summaryParams"];
       threadId: string;
       requestId?: string;
     }
@@ -398,7 +400,7 @@ export function activityEntries(
       source: clean.source,
       ...(clean.botName || clean.botId ? { bot: clean.botName || clean.botId } : {}),
       ...(clean.tool ? { tool: clean.tool } : {}),
-      ...(clean.summary ? { summary: clean.summary } : {}),
+      ...(clean.summary ? { summary: clean.summary, summaryCode: clean.summaryCode, summaryParams: clean.summaryParams } : {}),
       threadId: clean.threadId,
       ...(clean.requestId ? { requestId: clean.requestId } : {}),
     });

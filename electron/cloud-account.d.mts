@@ -24,6 +24,9 @@ export interface CloudAccountState {
   machine?: import("./cloud-home.mjs").CloudMachine;
   /** Connected: the teams this account is in, each with its Cloud; absent while it is in none. */
   teams?: import("./cloud-home.mjs").CloudTeam[];
+  /** Connected, with no Cloud of the account's own: the team it was invited into, which opens first, before any plan is
+   * offered (the Admin's `landing`). */
+  landing?: { teamId: string };
   /** Connected to an Admin that lists every Cloud of the person's (contract v1 `clouds`): each of them, My Cloud first.
    * Absent from an older Admin, whose `machine` and `teams` say everything. */
   clouds?: import("./cloud-list.mjs").CloudListEntry[];
@@ -383,7 +386,8 @@ export declare function createCloudAccountClient(options: {
   warn?: (message: string) => void;
   /** Files or lending waits for a sleeping Cloud to wake: the session is read every 15 s. */
   awaitingWake?: () => boolean;
+  t?: (key: string, params?: Record<string, string | number>) => string;
 }): CloudAccountClient;
 export declare function cloudPlanSnapshot(state: CloudAccountState | null | undefined, extra?: { notice?: import("./cloud-home.mjs").CloudTrialState | null }): CloudPlanSnapshot;
 /** My Cloud's line under its name in the server menus, or null for none. */
-export declare function cloudMenuSublabel(state: CloudAccountState | null | undefined, date: (value: number) => string): string | null;
+export declare function cloudMenuSublabel(state: CloudAccountState | null | undefined, date: (value: number) => string, t?: (key: string, params?: Record<string, string | number>) => string): string | null;

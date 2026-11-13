@@ -6,7 +6,7 @@ RUN ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile --ignore-scri
 RUN pnpm build:server && pnpm exec vite build && node --experimental-strip-types scripts/dmxo-desktop.ts /src/desktop.Dockerfile
 
 FROM docker.io/library/docker@sha256:4fa0ee1f3a7e4354c4ea34558b6d4ee32859baf4973d4c8ccc8e7fe3dd730c04 AS dockercli
-FROM ghcr.io/milind-soni/openmausbot@sha256:501c133b5ddfa221d3b3383fc8d811d0fd9a7293268706b8f35de89ad19c1631
+FROM ghcr.io/milind-soni/openmausbot@sha256:6621452307934fa9c41a7e68c82006abf7d639ec692fcfba8281a0cbc6e65ba0
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
@@ -18,5 +18,5 @@ ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.source="https://github.com/haar09/OpenMausBot" \
       org.opencontainers.image.revision="$SOURCE_REVISION" \
       io.dmxo.openmausbot.source-build="1" \
-      io.dmxo.openmausbot.upstream-version="0.1.141"
+      io.dmxo.openmausbot.upstream-version="0.1.154"
 USER maus

@@ -1,3 +1,4 @@
+import { sinceFreshStart } from "../fresh-start.ts";
 import { Handoffs, isContextMessage } from "../delta-context.ts";
 import type { Store } from "../store.ts";
 import { createRoomSessions, type RoomSessionsDeps } from "./room-sessions.ts";
@@ -9,7 +10,7 @@ export interface ConversationSessionsDeps {
 
 export function createConversationSessions({ store, settings }: ConversationSessionsDeps) {
   const handoffs = new Handoffs({
-    order: (threadId) => store.activePath(threadId).filter(isContextMessage).map((m) => m.id),
+    order: (threadId) => sinceFreshStart(store.activePath(threadId)).filter(isContextMessage).map((m) => m.id),
     read: (botId, threadId, instanceId) => store.taskByThread(botId, threadId)?.handedMessages?.[instanceId],
     write: (botId, threadId, instanceId, state) => store.setHandedMessages(botId, threadId, instanceId, state),
     replies: (threadId, turnId) => store.activePath(threadId)
