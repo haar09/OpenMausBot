@@ -427,7 +427,7 @@ import { ComputerIdleTimer } from "./computer-idle.ts";
 import { CLOUD_COMPUTER_DID_NOT_START, CLOUD_COMPUTER_START_BUDGET_MS, CLOUD_COMPUTER_STARTING, createCloudComputerPower } from "./host/cloud-computer-power.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
-import { createExecutionGuards } from "./host/execution-guards.ts";
+import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { createPersonFirst } from "./host/person-first.ts";
 import { createRunOwners, runActorOf } from "./host/run-owner.ts";
 import { claudeUserSkillsEnabled, settingsTurnFields } from "./turn-settings.ts";
@@ -3898,7 +3898,6 @@ const questionRouting = createQuestionRouting({ store, handedInUnproven, active:
   steer: async (threadId, text) => canSteerThread(threadId) && (await steerThread(threadId, text)) !== "refused", mayReach: outsideLineage.mayReach });
 const handoffTicks = createHandoffTicks(), coordinator: Coordinator = createCoordinator({
   dataDir: DATA_DIR,
-  runtimeLimits: cfg.coordination,
   now: Date.now, wrote: handoffTicks.kick, handoffLimit: starterCaps.handoffs,
   log: line => console.error("coordinator:", line),
   legacyThreads: {
@@ -4525,7 +4524,6 @@ store.onChange((change) => {
       stoppedTurns.delete(change.threadId);
       turnStops.forget(change.threadId);
       repeats.settle(change.threadId);
-      turnBudget.settle(change.threadId);
       routines?.forgetRoutineRequestReceiptsForThread(change.threadId);
       // A deleted destination must not strand an approval: keep each run's snapshot.
       for (const run of routines?.listRuns() ?? []) {
@@ -4993,7 +4991,6 @@ const watchdog = new TurnWatchdog({
     const stalledVmTarget = localVmThreadTargets.get(turn.threadId);
     revokeInternalCapabilitiesForThread(turn.threadId);
     repeats.settle(turn.threadId);
-    turnBudget.settle(turn.threadId);
     const bot = botForThread(turn.botId, turn.threadId);
     const routineRun = activeRoutineRunForThread(turn.threadId);
     void runningTurnInstance(bot, turn.threadId)?.adapter.interruptTurn(turn.threadId).catch(() => {});
@@ -7077,18 +7074,26 @@ async function compactConversation(input: {
 const { handoffs, roomSessions } = createConversationSessions({ store, settings: () => cfg.context });
 const nativeCompactTokens = (instance: { driverKind: string; instanceId: string }) => instance.driverKind === "claudeAgent" ? Number(autoCompactWindow({ ...process.env, ...cfg.instances?.[instance.instanceId]?.environment })) : undefined;
 
-const { repeats, turnBudget, canSteerThread, steerThread } = createExecutionGuards({
-  store,
-  config: () => cfg,
-  engine: (threadId) => { const bot = store.botByThread(threadId); return bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined; },
-  pendingComputerSelection: (threadId) => Boolean(computerSelectionTurns.get(threadId)?.selected),
-  threadBusy,
-  watchdog,
-  turnStops,
-  liveTurnByThread,
-  liveTurns,
-  routines: () => routines,
-  interruptDirectThread,
+const loopingEngine = (threadId: string, bot = store.botByThread(threadId)) => bot ? runningTurnInstance(botForThread(bot.id, threadId), threadId)?.adapter : undefined;
+const canSteerThread = (threadId: string) => {
+  const engine = loopingEngine(threadId);
+  return admit("direct-busy", { pendingComputerSelection: Boolean(computerSelectionTurns.get(threadId)?.selected),
+    engineCanSteer: Boolean(engine?.capabilities.queueing && engine.steer) }).action === "steer";
+};
+const steerThread = async (threadId: string, text: string) => (await loopingEngine(threadId)?.steer?.(threadId, text)) ?? "refused";
+const repeats = createLoopGuard({
+  settings: () => loopGuardSettings(cfg),
+  append: (threadId, tool) => void store.appendMessage(threadId, { role: "bot", kind: "activity", tool }),
+  live: (threadId) => { const bot = store.botByThread(threadId); return Boolean(bot && threadBusy(bot.id, threadId)); },
+  waiting: (threadId) => watchdog.waiting(threadId),
+  canSteer: canSteerThread, steer: steerThread,
+  interrupt: async (threadId, cause) => {
+    const bot = store.botByThread(threadId);
+    if (!bot) return;
+    turnStops.stopping(threadId, liveTurnByThread.get(threadId), cause);
+    routines?.failThread(threadId, `${cause.charAt(0).toUpperCase()}${cause.slice(1)}`, { cause: "cap" });
+    await interruptDirectThread(bot.id, threadId, cause);
+  },
 });
 bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) repeats.onEvent(event); });
 const personFirst = createPersonFirst({ firstMs: Number(process.env.OMB_PERSON_FIRST_MS) || undefined, waiting: (threadId) => watchdog.waiting(threadId) || activeRoutineRunForThread(threadId) !== null,
@@ -7099,8 +7104,6 @@ const firstReplyRescue = createFirstReplyRescue({ store, botForThread, speaker: 
   engineName: (instanceId) => engineName(instanceId), quiet: (threadId) => isInternalTurn(threadId) || activeRoutineRunForThread(threadId) !== null,
   live: (threadId, turnId) => liveTurns.running(threadId) === turnId, requests: directRequestOwners });
 bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) liveTurns.onEvent(event); }); bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) firstReplyRescue.onEvent(event); });
-
-bus.subscribe((event: RuntimeEvent) => { if (!shouldIgnoreProviderEvent(event)) turnBudget.onEvent(event); });
 
 // Registered after the main fold, so busy is already false here; not gated on event.ok, since queued messages are the user's own words.
 bus.subscribe((event: RuntimeEvent) => {

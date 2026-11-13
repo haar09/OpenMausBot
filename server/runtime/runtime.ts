@@ -208,11 +208,6 @@ export class Runtime {
         return refuse("This teammate already reached a budget limit for this request. Its completed work is preserved; report the remaining work instead of assigning it again. A new request is needed to continue.", "budget");
       }
       if (parent.depth + 1 > this.limits.depth) return refuse(`Assignment depth limit reached (${this.limits.depth})`);
-      if (root && this.limits.totalRequests !== undefined && this.store.all({ rootId: root.id }).length - 1 >= this.limits.totalRequests) {
-        const reason = `Root request budget exhausted: ${this.limits.totalRequests} total assignments. No more work was started; report what is complete and what remains.`;
-        this.store.update(root, { kind: "budget", at: now, detail: reason });
-        return refuse(reason, "budget");
-      }
       sameCall = req.fanOut !== undefined && siblings.some(c => c.fanOut === req.fanOut);
       if (!sameCall && root?.budgets && root.budgets.requests + 1 > this.limits.requests) {
         this.store.update(root, { kind: "budget", at: now, detail: `requests: ${root.budgets.requests} since last progress` });
@@ -344,10 +339,6 @@ export class Runtime {
       const group = n.assignee.destination.groupId;
       if (parent?.status === "running" && group !== undefined && parent.assignee.destination.groupId === group) { this.heldBehindTurn(n, "its requester's turn in the room is running"); continue; }
       const resumed = n.status === "resume";
-      if (this.limits.totalExecutions !== undefined && this.store.all({ rootId: n.rootId }).reduce((sum, node) => sum + node.executions, 0) >= this.limits.totalExecutions) {
-        this.cancelTree(n, `Root execution budget exhausted: ${this.limits.totalExecutions} total turns. Work already completed is preserved; a new request is needed to continue.`, "failed", "budget");
-        continue;
-      }
       if (!resumed) {
         const root = n.parentId ? this.store.get(n.rootId) : n;
         if (root?.budgets && root.budgets.executions + 1 > this.limits.executions) {

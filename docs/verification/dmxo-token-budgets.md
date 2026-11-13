@@ -1,15 +1,16 @@
-# Execution controls: withdrawn production caps
+# Coding coordination and continuity
 
-The initial deployment added lifetime assignment/execution caps and a tool-count
-stop. These were withdrawn after operator review: useful work must not be stopped
-solely because it reaches an arbitrary action count.
+Delegation uses upstream's progress-based limits and repeat-failure guard. The
+custom lifetime-assignment, lifetime-execution and per-turn tool-count caps have
+been removed from the implementation and configuration schema.
 
-Production has no `coordination` override and no `loopGuard.maxToolCalls` or
-`loopGuard.stopAt`. Its original loop guard settings are restored:
-`{ "enabled": true, "correctiveRounds": 2 }`. The original built-in runtime and
-provider limits still exist; this change does not claim unlimited execution.
-The newly added optional lifetime/tool cap implementations are dormant.
-The monitor's added ten-minute timeout was also removed.
+The production loop guard remains `{ "enabled": true, "correctiveRounds": 2 }`.
+Upstream's runtime and provider limits still apply.
+
+A custom reassignment rule remains: a teammate with a recorded budget failure
+cannot receive another assignment under the same root request, including rework
+from another branch after a restart. Completed work is preserved. A fresh user
+request can assign that teammate again.
 
 Communication profiles use the existing runtime protocol:
 

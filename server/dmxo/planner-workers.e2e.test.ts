@@ -1,12 +1,9 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { launchVerificationServer, runControlOmb, verificationServerArgs, verificationServerEnvironment } from "../../scripts/control-omb.ts";
+import { launchVerificationServer, runControlOmb } from "../../scripts/control-omb.ts";
 import { request } from "../../scripts/mcp-server.ts";
-import { waitForExit } from "../testing/cleanup.ts";
 import { readHandoffs } from "../testing/handoff-rows.ts";
 import { codingPlannerPatch, codingWorkerPatch } from "./coding-team.ts";
 
@@ -87,21 +84,8 @@ it("lets a monitor routine reach two parallel workers through Senior Planner and
   const cli = (...args: string[]) => runControlOmb(args, { env: { OPENMAUSBOT_URL: session.info.url } }) as Promise<any>;
   const api = (path: string, body?: unknown, method = "POST") => request(path,
     body === undefined ? {} : { method, body: JSON.stringify(body) }, session.info.url) as Promise<any>;
-  const coordination = {};
   const evidencePath = `${session.info.logPath}.coding-team-depth-three.json`;
-  let restarted: ChildProcess | undefined;
   try {
-    await api("/api/config", { coordination }, "PATCH");
-    await waitForExit(session.child, { signal: "SIGTERM" });
-    const env = verificationServerEnvironment(process.env, session.info.dataDir, Number(new URL(session.info.url).port));
-    const log = openSync(session.info.logPath, "a", 0o600);
-    restarted = spawn(process.execPath, verificationServerArgs(env), {
-      cwd: fileURLToPath(new URL("../..", import.meta.url)), env, stdio: ["ignore", log, log],
-    });
-    closeSync(log);
-    await expect.poll(() => fetch(`${session.info.url}/api/health`, { signal: AbortSignal.timeout(1_000) })
-      .then(response => response.ok, () => false), { timeout: 30_000 }).toBe(true);
-    expect(JSON.parse(readFileSync(join(session.info.dataDir, "config.json"), "utf8")).coordination).toEqual(coordination);
     const monitor = (await cli("new-bot", "--name", "Log Analisti")).bot;
     const senior = (await cli("new-bot", "--name", "Senior Planner")).bot;
     const planner = (await cli("new-bot", "--name", "Kod Geliştirici")).bot;
@@ -172,13 +156,12 @@ it("lets a monitor routine reach two parallel workers through Senior Planner and
     expect(monitorRoot.origin.kind).toBe("routine");
     const messages = await api(`/api/threads/${monitorRoot.assignee.destination.threadId}/messages`);
     expect(messages.messages.filter((message: any) => message.text === "Incident resolved; verified implementation received.")).toHaveLength(1);
-    writeFileSync(evidencePath, JSON.stringify({ logPath: session.info.logPath, url: session.info.url, coordination, sent,
+    writeFileSync(evidencePath, JSON.stringify({ logPath: session.info.logPath, url: session.info.url, sent,
       run: await run(), assignments: finished, messages, parallelWorkers: 2, cascadesRefused: 2,
       turns: turns().map(({ botId, model, threadId, resumed }) => ({ botId, model, threadId, resumed })),
     }, null, 2));
     console.log(`Depth-three coding team fixture evidence: ${evidencePath}`);
   } finally {
-    if (restarted) await waitForExit(restarted, { signal: "SIGTERM" });
     await session.close();
   }
 }, 120_000);
